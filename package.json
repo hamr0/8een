@@ -1,0 +1,21 @@
+{
+  "name": "8een",
+  "version": "0.0.0",
+  "description": "A ZK age verifier a site can actually drop in. Proves over-18 without learning who you are.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "test:unit": "node --test test/verdict.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hamr0/8een.git"
+  }
+}
