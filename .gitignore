@@ -1,0 +1,18 @@
+# vendored upstream clone (re-materialize via poc/M0-EVIDENCE.md step 1 + poc/patches/)
+poc/longfellow-zk/
+
+# derived POC fixtures — regenerate with `node poc/make-fixtures.mjs` (checked-in script)
+poc/*.json
+
+# session/tool state that must never be tracked
+.claude/stash/
+.litectx/
+
+# secrets never live in the tree
+.env
+*.env
+
+node_modules/
+
+# local-only claude settings
+.claude/settings.local.json

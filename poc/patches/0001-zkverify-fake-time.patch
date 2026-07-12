@@ -1,0 +1,35 @@
+diff --git a/reference/verifier-service/server/zk/cbor.go b/reference/verifier-service/server/zk/cbor.go
+index eb6ae7b..5aa3cec 100644
+--- a/reference/verifier-service/server/zk/cbor.go
++++ b/reference/verifier-service/server/zk/cbor.go
+@@ -35,6 +35,8 @@ import (
+ 	"errors"
+ 	"fmt"
+ 	"log"
++	"os"
++	"time"
+ 
+ 	"github.com/fxamacker/cbor/v2"
+ )
+@@ -290,6 +292,21 @@ func validateIssuerKey(x509b []byte) (string, string, error) {
+ 		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+ 	}
+ 
++	// POC-ONLY (8een M0): the repo's example proofs carry a cert chain that
++	// expired 2026-05-07; allow pinning verification time to exercise the
++	// mechanism against the stale fixture. This block exists only in 8een's
++	// throwaway clone (poc/patches/0001-zkverify-fake-time.patch) — M1 is a
++	// rewrite that never carries it. Note: with this var exported, package
++	// tests minting NotBefore=now certs will fail; unset it before `go test`.
++	if ft := os.Getenv("ZKVERIFY_FAKE_TIME"); ft != "" {
++		t, err := time.Parse(time.RFC3339, ft)
++		if err != nil {
++			log.Fatalf("POC: malformed ZKVERIFY_FAKE_TIME %q (need RFC3339, e.g. 2026-04-01T00:00:00Z): %v", ft, err)
++		}
++		opts.CurrentTime = t
++		log.Printf("POC: x509 verification time pinned to %v", t)
++	}
++
+ 	if _, err := certs[0].Verify(opts); err != nil {
+ 		for _, cert := range certs {
+ 			log.Printf("cert subject: %v", cert.Subject)
