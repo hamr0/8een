@@ -91,8 +91,18 @@ export function classify(raw, opts = {}) {
   // only, so message wording drift cannot move the verdict.
   if (status === 400) {
     const err = String(body?.error ?? '');
-    const chain = /x509|certificate|chain|verify|unknown authority/i.test(err);
-    return answered(false, chain ? REASONS.ISSUER_UNTRUSTED : REASONS.PROOF_MALFORMED, err);
+    // Observed shapes:
+    //   "...failed to verify certificate chain: x509: certificate has expired..."
+    //   "...failed to parse certificates: x509: malformed extension"
+    // Both are rejections, so the bit is solid either way; the split below is
+    // diagnostic only and cannot move the verdict if upstream rewords.
+    const unparseable = /malformed|failed to parse|invalid cbor/i.test(err);
+    const untrusted = /verify certificate chain|unknown authority|expired|not yet valid/i.test(err);
+    return answered(
+      false,
+      !unparseable && untrusted ? REASONS.ISSUER_UNTRUSTED : REASONS.PROOF_MALFORMED,
+      err,
+    );
   }
 
   if (status !== 200 || !body || typeof body !== 'object') {

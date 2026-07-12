@@ -31,6 +31,52 @@ test('a deep ZK failure is a real answer: no', () => {
   assert.equal(v.reason, REASONS.ZK_PROOF_INVALID);
 });
 
+// THE TRAP. Observed from the real service (2026-07-12), byte-for-byte:
+//
+//   {"Status":false,
+//    "Claims":{"org.iso.18013.5.1":[{"ElementIdentifier":"age_over_18",
+//                                    "ElementValue":"9Q=="}]},   <- CBOR true!
+//    "Message":"verification failure: return code 5"}
+//
+// A tampered, REJECTED proof still reports age_over_18 = true. Claims are
+// echoed from the unverified CBOR envelope -- they are what the proof CLAIMS,
+// not what was PROVEN, and they are attacker-controlled. Any integration that
+// reads Claims without gating on Status is trivially bypassed by a forged blob.
+// Status is the gate. Claims are only meaningful behind it.
+test('ADVERSARIAL: a rejected proof still asserts age_over_18=true and must not pass', () => {
+  const rejectedButBoastful = {
+    kind: 'response',
+    status: 200,
+    body: {
+      Status: false,
+      Claims: claims('age_over_18', CBOR_TRUE),
+      Message: 'verification failure: return code 5',
+    },
+  };
+  const v = classify(rejectedButBoastful, opts);
+  assert.equal(v.over_threshold, false, 'attacker-controlled Claims must never reach the verdict');
+  assert.equal(v.reason, REASONS.ZK_PROOF_INVALID);
+});
+
+// Real messages captured from the running service, not invented for the test.
+test('the observed rejection messages classify correctly', () => {
+  const expired = classify({
+    kind: 'response',
+    status: 400,
+    body: { error: 'Error processing cbor request: failed to verify certificate chain: x509: certificate has expired or is not yet valid: current time 2026-07-12T21:42:56+02:00 is after 2026-05-07T05:34:10Z' },
+  }, opts);
+  assert.equal(expired.over_threshold, false);
+  assert.equal(expired.reason, REASONS.ISSUER_UNTRUSTED);
+
+  const malformed = classify({
+    kind: 'response',
+    status: 400,
+    body: { error: 'Error processing cbor request: failed to parse certificates: x509: malformed extension' },
+  }, opts);
+  assert.equal(malformed.over_threshold, false);
+  assert.equal(malformed.reason, REASONS.PROOF_MALFORMED);
+});
+
 // The trap. main.go discards LoadCircuits' error, so a server with no circuits
 // on disk starts, reports healthy, and answers every proof with HTTP 200 +
 // Status:false + "invalid circuit id" -- shaped exactly like a genuine reject.
