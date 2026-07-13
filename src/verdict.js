@@ -85,12 +85,18 @@ export function classify(raw, opts = {}) {
 
   const { status, body } = raw;
 
+  // A body we cannot even read is never a verdict about a person, whatever the
+  // status line says.
+  if (!body || typeof body !== 'object') {
+    return unanswerable(REASONS.RESPONSE_UNINTELLIGIBLE, `http ${status}: unreadable body`);
+  }
+
   // The shallow layer: the service refused the input before the ZK maths, at
   // CBOR decode or x509 chain validation. Both are true rejections -- the proof
   // in hand is not acceptable. The bit is solid; the split below is diagnostic
   // only, so message wording drift cannot move the verdict.
   if (status === 400) {
-    const err = String(body?.error ?? '');
+    const err = String(body.error ?? '');
     // Observed shapes:
     //   "...failed to verify certificate chain: x509: certificate has expired..."
     //   "...failed to parse certificates: x509: malformed extension"
@@ -105,7 +111,7 @@ export function classify(raw, opts = {}) {
     );
   }
 
-  if (status !== 200 || !body || typeof body !== 'object') {
+  if (status !== 200) {
     return unanswerable(REASONS.RESPONSE_UNINTELLIGIBLE, `http ${status}`);
   }
 
