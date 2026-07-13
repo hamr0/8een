@@ -190,7 +190,19 @@ closes, not asserted.
 
 ## 10. Naming & publishing
 
-- **Name:** `8een` (= eighteen). CLI/binary naming decided at M1 (`8een-verify`).
+- **Name:** the project is `8een` (= eighteen). **The npm package is `zk8een`.**
+  npm permanently refuses the bare name: its typo-squat similarity filter rejects
+  `8een` as too close to `open`/`when`/`leven`/`levn`, for everyone, with no appeal
+  (verified 2026-07-13 — a publish attempt returns 403). So the name was never at
+  risk of being taken; it simply cannot exist. Scoping (`@hamr0/8een`) was the
+  alternative and was rejected: an unscoped name is the one people type.
+- **Publishing:** OIDC trusted publishing via GitHub Actions (`publish.yml`,
+  manual `workflow_dispatch`) — no npm token ever. `zk8een@0.0.0` is an inert,
+  deprecated placeholder that exists only because npm requires a package to exist
+  before a trusted publisher can be attached to it. **Nothing real is published
+  until the longfellow binary problem is solved** (see NO-GO #9 / M2): `0.1.0`
+  drives a verifier binary it does not ship and cannot verify a single proof. A
+  correct publish pipeline is not clearance to use it.
 - **License:** Apache-2.0 (matches longfellow-zk).
 - **Repo:** public on GitHub under `hamr0` from day one. **No key material
   ever enters the tree** — AGENT_RULES' "never write keys into the tree" has

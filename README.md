@@ -12,8 +12,11 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
-  <img src="https://img.shields.io/badge/status-pre--M1%20·%20M0%20passed-2a8c4f" alt="status: pre-M1, M0 passed">
-  <!-- CI + version badges land with M1 (first workflow, first package.json) -->
+  <img src="https://img.shields.io/badge/status-M1%20passed%20·%20M2%20next-2a8c4f" alt="status: M1 passed, M2 next">
+  <a href="https://github.com/hamr0/8een/actions/workflows/ci.yml"><img src="https://github.com/hamr0/8een/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <!-- No npm version badge: the only thing on the registry is an inert 0.0.0
+       placeholder holding the name. A version badge would advertise it as a
+       release. It lands when a version ships that can actually verify a proof. -->
 </p>
 
 **Stateless, one-bit, unlinkable age verification. Proof in → `true/false` out — no name, no birthdate, no document, no identifier, nothing stored.**
