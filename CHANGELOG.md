@@ -10,6 +10,13 @@ M1 — the verify module. A ZK age proof goes in; one trustworthy bit comes out.
 Not yet a gate a site can drop in (that is M4), and **not** replay-safe (see
 below).
 
+**The package is `zk8een`.** npm permanently refuses the bare name `8een` — its
+typo-squat filter rejects it as too close to `open`/`when`/`leven`/`levn`, for
+everyone. The project is still 8een; only the npm name differs. Nothing is
+published at `0.1.0` yet: it drives a longfellow binary it does not ship (see
+[Known gaps](#known-gaps--stated-not-glossed)), and until that is solved,
+`npm install zk8een` would hand you a verifier that cannot verify.
+
 ### Added
 - `Verifier` — the public surface. `check(proof)` → `{ok, over_threshold, reason}`.
 - **TypeScript types**, generated from JSDoc (`tsc`, `checkJs` + `strictNullChecks`)

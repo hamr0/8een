@@ -28,10 +28,10 @@ eIDAS 2.0 Art. 5a(16) mandates unlinkability as an *outcome*. The EU age-verific
 
 ## Quick start (honest M1 edition)
 
-There is still nothing to `npm install` — 8een is a module on a ladder, not yet a package, and the gate that a site actually drops in arrives at M4. What exists today is the verify module: zero runtime dependencies, vanilla Node ≥22.
+There is still nothing worth `npm install`-ing — 8een is a module on a ladder, not yet a package, and the gate that a site actually drops in arrives at M4. The name `zk8een` is reserved on npm, but the only version published there is an empty `0.0.0` placeholder; the first real release is `0.1.0`. What exists today is the verify module: zero runtime dependencies, vanilla Node ≥22.
 
 ```js
-import { Verifier, provision } from '8een';
+import { Verifier, provision } from 'zk8een';
 
 await provision('./circuits');            // 17 pinned circuits, sha256-verified
 

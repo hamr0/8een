@@ -27,7 +27,7 @@ mean.
 ## Minimal usage
 
 ```js
-import { Verifier, provision } from '8een';
+import { Verifier, provision } from 'zk8een';
 
 await provision('./circuits');              // 17 pinned circuits, sha256-verified
 
@@ -227,7 +227,7 @@ Other properties:
 - **Node ≥ 22.** Zero runtime dependencies.
 - **You must supply the `binary`.** 8een drives the longfellow verifier service
   (~10.5 MB, built from C++/cgo). **This package does not ship it**, so
-  `npm install 8een` alone will not verify anything. Bundling or building it is
+  `npm install zk8een` alone will not verify anything. Bundling or building it is
   tracked work, not a decision you can configure around today.
 - **No EU trust-list ingestion.** The reference verifier consumes a PEM bundle and
   an ISO 18013-5 VICAL (the US/AAMVA format). eIDAS Trusted Lists are signed XML
