@@ -26,16 +26,40 @@ eIDAS 2.0 Art. 5a(16) mandates unlinkability as an *outcome*. The EU age-verific
 
 8een exists to make the unlinkable version so cheap to adopt that shipping the linkable one becomes the expensive, embarrassing, indefensible option. Not a campaign against the lock — a component that removes its premise.
 
-## Quick start (honest pre-M1 edition)
+## Quick start (honest M1 edition)
 
-There is nothing to `npm install` yet. What you can do today:
+There is still nothing to `npm install` — 8een is a module on a ladder, not yet a package, and the gate that a site actually drops in arrives at M4. What exists today is the verify module: zero runtime dependencies, vanilla Node ≥22.
+
+```js
+import { Verifier, provision } from '8een';
+
+await provision('./circuits');            // 17 pinned circuits, sha256-verified
+
+const verifier = await Verifier.start({
+  binary: './longfellow-verifier',
+  circuitDir: './circuits',
+  caCerts: './issuers.pem',               // THE trust boundary — choose it deliberately
+  threshold: 18,                          // configurable; the output stays one bit
+});
+
+const v = await verifier.check({ transcript, deviceResponse });
+
+if (!v.ok) serveError();                  // we are broken — do NOT say "underage"
+else if (v.over_threshold) allowEntry();
+else denyEntry();                         // a real, cryptographic no
+```
+
+**`ok` and `over_threshold` are different questions.** `ok` says whether we got an answer at all; `over_threshold` says what the answer was. When `ok` is false, `over_threshold` is `null` — never `false`. A verifier that cannot verify is broken, and a broken verifier reporting "no" would turn away every legitimate adult while sounding exactly like a working one.
+
+**This module does not stop replay, and does not pretend to.** It is stateless: hand it the same valid proof a thousand times and it will say "valid" a thousand times, because it is. Freshness is the relying party's job — a nonce per visit, bound into the transcript, spent once. That is the gate (M4). Shipping this alone as an age gate would verify beautifully and still admit a fourteen-year-old holding a borrowed proof.
 
 ```bash
-# read what this is and deliberately is not (incl. the NO-GO table)
+# what this is and deliberately is not (incl. the NO-GO table)
 docs/01-product/8een-prd.md
 
-# reproduce the M0 spike — every step, measurement, and deviation recorded
+# the M0 spike and the M1 module — every step, measurement, and deviation recorded
 poc/M0-EVIDENCE.md
+docs/02-evidence/M1-EVIDENCE.md
 ```
 
 The vendored longfellow-zk clone and derived fixtures are gitignored by design; everything needed to re-materialize them is committed (upstream SHA `d8ad8f65`, `poc/patches/0001-zkverify-fake-time.patch`, `poc/make-fixtures.mjs` — regenerates the negative fixtures byte-identically).
@@ -47,7 +71,7 @@ The vendored longfellow-zk clone and derived fixtures are gitignored by design; 
 | Milestone | Deliverable | State |
 |---|---|---|
 | **M0** | POC spike: build the core, verify a real proof, reject what must be rejected | **PASSED** — [evidence](poc/M0-EVIDENCE.md) |
-| **M1** | `verify` module: pure verdict, never-throw `{ok, over_threshold, reason}`, full negative matrix | next |
+| **M1** | `verify` module: pure verdict, never-throw `{ok, over_threshold, reason}`, full negative matrix | **PASSED** — [evidence](docs/02-evidence/M1-EVIDENCE.md) |
 | **M2** | Full local loop: test-CA (keys generated at runtime, never in the tree), offline fixtures | planned |
 | **M3** | Interop with the EU AV app's demo-build proofs | planned |
 | **M4** | HTTP gate + drop-in middleware + demo site (per-session nonce, single-use) | planned |
