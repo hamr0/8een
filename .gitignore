@@ -4,10 +4,14 @@ poc/longfellow-zk/
 # derived POC fixtures — regenerate with `node poc/make-fixtures.mjs` (checked-in script)
 poc/*.json
 
-# Agent / IDE scratch — never commit (LIBRARY_CONVENTIONS §7)
-.claude/      # agent context + scratch (stash, friction, memory notes)
-.litectx/     # local index / embeddings cache
-.idea/        # JetBrains IDE settings
+# Agent / IDE scratch — never commit (LIBRARY_CONVENTIONS §7).
+# Every dot-directory is local tooling state (.claude, .litectx, .idea, .vscode,
+# whatever the next tool invents) — none of it is the library.
+# NB: git has no trailing comments in .gitignore — a `#` on a rule line becomes
+# part of the pattern and silently breaks it. Comments go on their own line.
+.*/
+# ...except .github: CI and publish workflows ARE the library's.
+!.github/
 
 # secrets never live in the tree
 .env
