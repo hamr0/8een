@@ -8,7 +8,8 @@ verifier is stateless; per-session nonce freshness is the relying party's
 duty and is a hard M4 requirement). Precision note from M0: longfellow-zk ships a Go reference
 verifier *service* (Docker/cgo, US-DMV trust list) — so the claim is not "no
 verifier exists" but "no adoptable drop-in exists, and the EU's official
-stack still cannot consume ZK proofs." Awaiting owner "go" for M1.
+stack still cannot consume ZK proofs." **M1 PASSED** (2026-07-13, v0.1.0 —
+[evidence](../02-evidence/M1-EVIDENCE.md)); M2 (test-CA + prover CLI) is next.
 **Owner:** hamr0
 **Last updated:** 2026-07-12
 

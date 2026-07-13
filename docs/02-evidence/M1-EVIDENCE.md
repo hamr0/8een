@@ -107,7 +107,63 @@ caught it. The rule is now structural: **the verifier's `error` envelope is what
 marks a genuine refusal**, so upstream rewording can blur a reason string but can
 never move the bit. A fast unit test now pins that exact message.
 
-## Tests — 42 green (30 unit in 200 ms, 12 integration against the real service)
+## Security gate (`/security`, 2026-07-13)
+
+One High finding, and a worse one found while verifying it. Both were confirmed
+by running the server, not by reading it.
+
+**High — the trust boundary was fetched over the network by default.**
+`vicalUrl` was optional, so omitting it handed the decision to upstream's default:
+`https://vical.dts.aamva.org/vical/vc` — **22 AAMVA (US motor-vehicle) issuer
+certificates, pulled at every boot**, into a verifier built to refute the *EU's*
+stack. `main.go:80` makes a failed fetch non-fatal, so the anchor set silently
+varies with the network. For a component whose success criterion **is** trust
+discrimination, that is the security boundary changing with the weather.
+**Fixed:** no trust list is fetched unless explicitly requested; the flag is
+always passed explicitly so upstream's default can never be inherited; documented
+in the public API. **Trust is project config.**
+
+**Worse — the trust list silently truncates. Found by being suspicious of a number.**
+We reported 17 anchors. `certs.pem` contains **19**. Our count was faithful — the
+child really did load 17. Upstream's `LoadIssuerRootCA` does:
+
+```go
+block, rest := pem.Decode(rootPem)
+if block == nil { break }   // ...and then returns nil. Success.
+```
+
+The cause is a malformed boundary at **`certs.pem` line 142**, where an END and a
+BEGIN marker share a line:
+
+```
+-----END CERTIFICATE----------BEGIN CERTIFICATE-----
+```
+
+Repair that one line and all 19 load — **verified both ways (17 → 19)**.
+
+This is the worst place in the system for a silent partial load. An operator who
+appends their issuer CA to a bundle with a bad boundary has it **dropped without
+a word** — and then every proof from that issuer is rejected as
+`issuer_untrusted`, confidently, by a verifier reporting perfect health. It is the
+same failure as the zero-circuit trap and the `Claims` echo, in the one place
+where it decides who gets in. **Fixed:** count the certificates in the bundle,
+refuse to serve if fewer loaded. Zero anchors is fatal too, for the same reason.
+
+**Also fixed:** readiness now waits for the child's own `"Starting server"` line
+rather than an open port — the log is an ordered stream, so that guarantees every
+earlier line was *processed*, closing a race in which a network trust list could
+load without us having read the line yet. Plus three Lows: downloads are
+size-checked before being buffered (a hostile host could OOM us before the sha256
+ran); circuit ids are validated before becoming paths or URLs; the child receives
+a minimal environment instead of the host's entire env.
+
+**Coverage:** secrets **clean** (0 tracked key files, `.env` gitignored, nothing
+in the diff). Tenant isolation / IDOR / N+1 **N/A** — 8een has no users, no
+records, and stores nothing; that is the product. Rate limiting **N/A at M1** and
+a hard M4 requirement on the gate. Error handling **clean** — every IO, network,
+spawn and parse path has an explicit failure route.
+
+## Tests — 45 green (30 unit in 200 ms, 15 integration against the real service)
 
 **Trust discrimination (PRD §7.1, D5 — the owner's definition of success):**
 the **same proof bytes** are **accepted** under the real trust list and
