@@ -23,7 +23,7 @@
  * reporting healthy -- so we fail loudly here, before it ever gets that chance.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import manifest from './circuits.manifest.json' with { type: 'json' };
@@ -108,8 +108,11 @@ async function fetchCircuit(circuit, path, fetchImpl) {
   }
 
   // Write beside the target, then rename: a crash mid-write must never leave a
-  // truncated circuit that later looks like a merely-corrupt file.
-  const partial = `${path}.part-${process.pid}`;
+  // truncated circuit that later looks like a merely-corrupt file. The suffix is
+  // random rather than the pid, because a pid is recycled -- a stale .part-<pid>
+  // from a killed run would then collide with 'wx' and wedge provisioning for
+  // good, with an EEXIST that says nothing about the real problem.
+  const partial = `${path}.part-${randomUUID()}`;
   try {
     await writeFile(partial, bytes, { flag: 'wx' });
     await rename(partial, path);

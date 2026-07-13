@@ -151,11 +151,68 @@ test('a claim value we cannot read is refused, never guessed', () => {
   assert.equal(v.reason, REASONS.RESPONSE_UNINTELLIGIBLE);
 });
 
+// A 400 we cannot recognise could be a proxy, an intermediary, a future upstream
+// error shape -- anything. Asserting "not over 18" on a response we did not
+// understand is the zero-circuit mistake wearing a different status code.
+test('an HTTP 400 we cannot recognise is a non-answer, not a rejection', () => {
+  for (const body of [{}, { message: 'upstream proxy error' }, { error: '' }]) {
+    const v = classify({ kind: 'response', status: 400, body }, opts);
+    assert.equal(v.ok, false, `${JSON.stringify(body)} must not yield a verdict`);
+    assert.equal(v.over_threshold, null, 'an unreadable refusal must never read as "underage"');
+    assert.equal(v.reason, REASONS.RESPONSE_UNINTELLIGIBLE);
+  }
+});
+
+// ...while the refusals we DO recognise stay verdicts. The fix above must not
+// swallow the real ones.
+test('recognised refusals remain rejections', () => {
+  const chain = classify({ kind: 'response', status: 400, body: { error: 'Error processing cbor request: failed to verify certificate chain: x509: certificate has expired' } }, opts);
+  assert.equal(chain.over_threshold, false);
+  assert.equal(chain.reason, REASONS.ISSUER_UNTRUSTED);
+
+  const junk = classify({ kind: 'response', status: 400, body: { error: 'Error processing cbor request: failed to parse certificates: x509: malformed extension' } }, opts);
+  assert.equal(junk.over_threshold, false);
+  assert.equal(junk.reason, REASONS.PROOF_MALFORMED);
+});
+
+// Caught by the integration suite when an earlier cut of the fix above matched
+// on message TEXT: a real garbage proof comes back with "unsupported operation",
+// wording no regex had anticipated, and we duly reported "we are broken" instead
+// of "that is not a proof". The discriminator is the verifier's error envelope,
+// not its prose.
+test('a refusal we did not anticipate the wording of is still a rejection', () => {
+  const v = classify(
+    { kind: 'response', status: 400, body: { error: 'Error processing cbor request: unsupported operation' } },
+    opts,
+  );
+  assert.equal(v.ok, true, 'the verifier spoke -- it refused the proof');
+  assert.equal(v.over_threshold, false);
+  assert.equal(v.reason, REASONS.PROOF_MALFORMED);
+});
+
+test('a claim present but empty is a bad proof, not a broken verifier', () => {
+  const v = classify(
+    { kind: 'response', status: 200, body: { Status: true, Claims: claims('age_over_18', '') } },
+    opts,
+  );
+  assert.equal(v.ok, true, 'the peer sent us a bad claim -- that is not OUR malfunction');
+  assert.equal(v.over_threshold, false);
+  assert.equal(v.reason, REASONS.CLAIM_ABSENT);
+});
+
+test('a caller who hands us something that is not a proof gets no verdict', () => {
+  const v = classify({ kind: 'invalid_request', detail: 'proof.transcript is missing' }, opts);
+  assert.equal(v.ok, false);
+  assert.equal(v.over_threshold, null, 'a bug in the caller is not evidence about a person');
+  assert.equal(v.reason, REASONS.INVALID_REQUEST);
+});
+
 test('transport failures are non-answers, not negatives', () => {
   for (const [raw, reason] of [
     [{ kind: 'timeout' }, REASONS.SERVICE_TIMEOUT],
     [{ kind: 'unreachable', detail: 'ECONNREFUSED' }, REASONS.SERVICE_UNREACHABLE],
     [{ kind: 'not_ready' }, REASONS.SERVICE_NOT_READY],
+    [{ kind: 'invalid_request', detail: 'proof.transcript is empty' }, REASONS.INVALID_REQUEST],
   ]) {
     const v = classify(raw, opts);
     assert.equal(v.ok, false, `${reason} must not be an answer`);
@@ -190,7 +247,9 @@ test('INVARIANT: no answer means null, never false', () => {
     { kind: 'response', status: 200, body: { Status: false, Message: 'verification failure: return code 5' } },
     { kind: 'response', status: 200, body: { Status: false, Message: 'invalid circuit id: abc' } },
     { kind: 'response', status: 400, body: { error: 'x509: certificate has expired' } },
+    { kind: 'response', status: 400, body: {} },
     { kind: 'response', status: 500, body: 'boom' },
+    { kind: 'invalid_request', detail: 'not a proof' },
   ];
   for (const raw of everything) {
     const v = classify(raw, opts);

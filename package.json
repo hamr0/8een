@@ -11,8 +11,9 @@
     ".": "./src/index.js"
   },
   "scripts": {
-    "test": "node --test test/",
-    "test:unit": "node --test test/verdict.test.js"
+    "test": "node --test test/verdict.test.js test/circuits.test.js test/service.test.js",
+    "test:integration": "node --test --test-timeout 400000 test/integration.test.js",
+    "test:all": "npm run test && npm run test:integration"
   },
   "repository": {
     "type": "git",

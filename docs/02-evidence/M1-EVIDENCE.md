@@ -79,7 +79,35 @@ The rejection is shaped **identically to a genuine cryptographic "no"**. A naive
 Startup is **not** "about 45 seconds" — it is a range, and the top of that range
 is 65% higher than the bottom. Anything that assumes a fixed figure is wrong.
 
-## Tests — 30 green (20 unit, 10 integration against the real service)
+## Post-review hardening (2026-07-13)
+
+`/code-review` raised 8 findings against the branch. **All 7 code findings were
+reproduced by execution before being fixed** — none was accepted on argument
+alone. The core invariant (`ok:false ⇒ over_threshold:null`) held throughout; no
+finding let a bad proof through or turned "broken" into "underage". But two of
+them meant the readiness signal was **weaker than this document claimed**, which
+is its own kind of lie.
+
+| # | Confirmed by | Fix |
+|---|---|---|
+| 1 | Identical bytes counted as **3, 2, or 0** circuits depending only on where the pipe chunked. A split inside the sole matching line ⇒ `start()` refuses a **healthy** server. | Buffer the partial line across chunks (`splitLines`). A child's stdout is a byte stream, not a line stream. |
+| 2 | Corrupted 5 of 17 circuits ⇒ server loaded 12, opened its port, **we declared ourselves READY**. | Require *all* expected circuits, not `> 0`. Abort at the first file upstream rejects. |
+| 3 | `classify(400, {})` returned `over_threshold:false` — a confident "not over 18" from a response we could not read. | A 400 is a rejection only if it carries the verifier's own `error` envelope. Structure, not prose. |
+| 4 | `verify({transcript: undefined})` reported `service_unreachable` — a caller's bug sending someone to debug a healthy network. | Validate the argument up front; new `invalid_request` reason. |
+| 5 | No durable `'error'` listener on the child after spawn: a later EPIPE/EPERM would take down the **host process**, not just the verifier. | Durable listener; degrade to `ok:false` like every other breakage. |
+| 6 | An empty claim value made 8een declare **itself** broken over a peer's malformed response. | Empty claim ⇒ `claim_absent` (a fact about the proof). Only a genuinely unreadable value stays "we don't know". |
+| 7 | A stale `.part-<pid>` from a killed run wedged provisioning with `EEXIST` once the pid recycled. | Random suffix, not the pid. |
+| 8 | `npm test` started three real verifiers, ~4 min — no fast gate. | `test` = unit (200 ms); `test:integration` separate. |
+
+**A fix that was itself wrong, caught by the suite.** The first cut of #3
+discriminated on message *text*. A real garbage proof then came back with
+`"unsupported operation"` — wording no regex had anticipated — and 8een reported
+*"we are broken"* instead of *"that is not a proof"*. The integration suite
+caught it. The rule is now structural: **the verifier's `error` envelope is what
+marks a genuine refusal**, so upstream rewording can blur a reason string but can
+never move the bit. A fast unit test now pins that exact message.
+
+## Tests — 42 green (30 unit in 200 ms, 12 integration against the real service)
 
 **Trust discrimination (PRD §7.1, D5 — the owner's definition of success):**
 the **same proof bytes** are **accepted** under the real trust list and

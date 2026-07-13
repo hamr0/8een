@@ -30,6 +30,7 @@ export const REASONS = Object.freeze({
   SERVICE_NOT_READY: 'service_not_ready',
   CIRCUIT_UNAVAILABLE: 'circuit_unavailable',
   RESPONSE_UNINTELLIGIBLE: 'response_unintelligible',
+  INVALID_REQUEST: 'invalid_request',
 });
 
 /**
@@ -77,6 +78,10 @@ export function classify(raw, opts = {}) {
       return unanswerable(REASONS.SERVICE_UNREACHABLE, raw.detail);
     case 'not_ready':
       return unanswerable(REASONS.SERVICE_NOT_READY, raw.detail);
+    case 'invalid_request':
+      // The caller handed us something that is not a proof. We have no verdict
+      // to give -- and this is emphatically not evidence about a person.
+      return unanswerable(REASONS.INVALID_REQUEST, raw.detail);
     case 'response':
       break;
     default:
@@ -96,19 +101,35 @@ export function classify(raw, opts = {}) {
   // in hand is not acceptable. The bit is solid; the split below is diagnostic
   // only, so message wording drift cannot move the verdict.
   if (status === 400) {
-    const err = String(body.error ?? '');
-    // Observed shapes:
+    const err = typeof body.error === 'string' ? body.error.trim() : '';
+
+    // A 400 carrying the verifier's own error envelope is the VERIFIER refusing
+    // this proof -- at CBOR decode or x509 chain validation, before the maths.
+    // That is a true rejection. A 400 WITHOUT it is not: it could be a proxy, an
+    // intermediary, a load balancer, a future upstream shape. Asserting "not over
+    // 18" on a response we did not understand is the zero-circuit mistake wearing
+    // a different status code.
+    //
+    // Discriminate on STRUCTURE (is this the verifier's error envelope?), not on
+    // wording. An earlier cut of this matched on message text and duly reported
+    // "we are broken" the first time a real garbage proof came back with
+    // "unsupported operation" -- wording no regex had anticipated. The bit must
+    // not hinge on upstream's prose.
+    if (!err) {
+      return unanswerable(REASONS.RESPONSE_UNINTELLIGIBLE, 'http 400 without the verifier error envelope');
+    }
+
+    // Observed:
     //   "...failed to verify certificate chain: x509: certificate has expired..."
     //   "...failed to parse certificates: x509: malformed extension"
-    // Both are rejections, so the bit is solid either way; the split below is
-    // diagnostic only and cannot move the verdict if upstream rewords.
+    //   "...unsupported operation"                      (an outright garbage proof)
+    // The split below is DIAGNOSTIC ONLY -- every branch rejects, so rewording
+    // upstream can blur the reason string but can never move the verdict.
+    // NB: not a bare /cbor/ -- every message carries the prefix "Error processing
+    // cbor request:", so it discriminates nothing.
     const unparseable = /malformed|failed to parse|invalid cbor/i.test(err);
-    const untrusted = /verify certificate chain|unknown authority|expired|not yet valid/i.test(err);
-    return answered(
-      false,
-      !unparseable && untrusted ? REASONS.ISSUER_UNTRUSTED : REASONS.PROOF_MALFORMED,
-      err,
-    );
+    const untrusted = /certificate|chain|x509|unknown authority|expired|not yet valid/i.test(err);
+    return answered(false, untrusted && !unparseable ? REASONS.ISSUER_UNTRUSTED : REASONS.PROOF_MALFORMED, err);
   }
 
   if (status !== 200) {
@@ -138,10 +159,14 @@ export function classify(raw, opts = {}) {
   // a cryptographically perfect proof of age_over_13 is still not what we asked
   // for. The claim we required must be present, and true. (PRD 7.1, D6.)
   const value = findClaim(body.Claims, requiredClaim);
-  if (value === undefined) {
+  // Absent, or present but carrying nothing: either way the proof does not
+  // attest the claim we required. That is a fact about the proof, not about us.
+  if (value === undefined || value === null || value === '') {
     return answered(false, REASONS.CLAIM_ABSENT, `proof carries no ${requiredClaim}`);
   }
 
+  // Present, non-empty, and we still cannot read it. Now we genuinely do not
+  // know, and we refuse to guess a bit about a person.
   const bit = readCborBool(value);
   if (bit === undefined) {
     return unanswerable(REASONS.RESPONSE_UNINTELLIGIBLE, `cannot read ${requiredClaim}`);

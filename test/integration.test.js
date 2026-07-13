@@ -19,7 +19,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdtempSync, writeFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -63,8 +63,35 @@ test('refuses to start when no circuits loaded, rather than serve confident nons
   const empty = mkdtempSync(join(tmpdir(), '8een-nocircuits-'));
   await assert.rejects(
     Verifier.start({ ...RIG, circuitDir: empty, port: 8911, startupTimeoutMs: 15_000, env: PINNED_CLOCK }),
-    /loaded 0 circuits/,
+    /0 circuit files/,
     'a verifier with no circuits must not come up',
+  );
+});
+
+// A PARTIALLY loaded verifier is the subtler version of the same trap, and the
+// one upstream actively creates: LoadCircuits skips a file whose recomputed
+// circuit_id does not match its name, logs it, and carries on. Measured before
+// this guard existed: 5 of 17 circuits corrupted -> the server loaded 12, opened
+// its port, and we declared ourselves READY. Proofs needing one of the missing 5
+// would then be rejected for reasons having nothing to do with the holder.
+test('refuses to start when only SOME circuits load', suite, async () => {
+  const dir = mkdtempSync(join(tmpdir(), '8een-partial-'));
+  const source = new URL('../poc/longfellow-zk/lib/circuits/mdoc/circuits/', import.meta.url).pathname;
+  const names = readdirSync(source).filter((f) => /^[0-9a-f]{64}$/.test(f));
+
+  for (const [i, name] of names.entries()) {
+    // Corrupt 5 of them. Upstream will skip these and start anyway.
+    writeFileSync(join(dir, name), i < 5 ? 'corrupted' : readFileSync(join(source, name)));
+  }
+
+  // Not an exact count: we abort at the FIRST rejected file rather than sit
+  // through 45s of loading to tally a total we already know is fatal. How many
+  // skips have been logged by that instant is a race, and asserting on it would
+  // be asserting on the scheduler.
+  await assert.rejects(
+    Verifier.start({ ...RIG, circuitDir: dir, port: 8915, env: PINNED_CLOCK }),
+    /rejected at least \d+ of 17 circuit files as not matching their circuit id/,
+    'a half-loaded verifier reports healthy and rejects real proofs -- it must not come up',
   );
 });
 
@@ -139,6 +166,18 @@ test('the negative matrix (PRD §7.1)', suite, async (t) => {
     const r = await v.check({ transcript: Buffer.from('nope'), deviceResponse: Buffer.from('nope') });
     assert.equal(r.over_threshold, false);
     assert.equal(r.ok, true);
+  });
+
+  // A caller bug is not evidence about a person. Before this guard,
+  // Buffer.from(undefined) threw inside the fetch try-block and came back as
+  // "service_unreachable" -- sending whoever is on call to debug a healthy network.
+  await t.test('a malformed argument is a caller error, not a network failure', async () => {
+    for (const bad of [undefined, {}, { transcript: Buffer.from('x') }, { transcript: undefined, deviceResponse: Buffer.from('x') }, { transcript: 'string', deviceResponse: Buffer.from('x') }]) {
+      const r = await v.check(bad);
+      assert.equal(r.ok, false, `${JSON.stringify(bad)} must not yield a verdict`);
+      assert.equal(r.over_threshold, null);
+      assert.equal(r.reason, REASONS.INVALID_REQUEST, 'must not masquerade as an unreachable service');
+    }
   });
 
   // PRD D6: the threshold is the caller's, not the proof's. This proof attests
