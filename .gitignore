@@ -4,9 +4,10 @@ poc/longfellow-zk/
 # derived POC fixtures — regenerate with `node poc/make-fixtures.mjs` (checked-in script)
 poc/*.json
 
-# session/tool state that must never be tracked
-.claude/stash/
-.litectx/
+# Agent / IDE scratch — never commit (LIBRARY_CONVENTIONS §7)
+.claude/      # agent context + scratch (stash, friction, memory notes)
+.litectx/     # local index / embeddings cache
+.idea/        # JetBrains IDE settings
 
 # secrets never live in the tree
 .env
@@ -14,5 +15,5 @@ poc/*.json
 
 node_modules/
 
-# local-only claude settings
-.claude/settings.local.json
+# generated types — built on publish, never committed (LIBRARY_CONVENTIONS §2)
+/types/

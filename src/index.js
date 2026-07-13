@@ -20,36 +20,42 @@
 
 import { VerifierService } from './service.js';
 import { classify, REASONS } from './verdict.js';
+import { provision, manifest } from './circuits.js';
 
-export { REASONS, classify, VerifierService };
+export { REASONS, classify, VerifierService, provision, manifest };
 
 export class Verifier {
+  /** @type {VerifierService} */
   #service;
+  /** @type {string} */
   #requiredClaim;
 
+  /**
+   * @param {VerifierService} service       a service you have already started
+   * @param {string} requiredClaim          e.g. `age_over_18`
+   */
   constructor(service, requiredClaim) {
     this.#service = service;
     this.#requiredClaim = requiredClaim;
   }
 
   /**
-   * @param {object} opts
-   * @param {string} opts.binary      path to the longfellow verifier service
-   * @param {string} opts.circuitDir  directory of circuit files
-   * @param {string} opts.caCerts     PEM bundle of trusted issuer roots. THIS IS
-   *   THE TRUST BOUNDARY: a proof is accepted only if its issuer chains to one of
-   *   these. Choose it deliberately -- it is the whole security decision.
-   * @param {string} [opts.vicalUrl]  opt in to a network-fetched issuer trust
-   *   list (ISO 18013-5 VICAL). Default: NONE. Upstream defaults this to AAMVA's
-   *   US motor-vehicle list and pulls it over the network at every boot; 8een
-   *   does not, because a trust boundary that changes with the weather is not a
-   *   trust boundary. If you set it, you are choosing to trust whoever it serves.
-   * @param {number} [opts.threshold] the age in "over N" (PRD D6). Default 18.
+   * Provision circuits first (see {@link provision}), then start one of these and
+   * keep it: the circuit load takes 44-73s, so it is a boot cost, not a per-request one.
+   *
+   * @param {import('./types.js').ServiceInit & {threshold?: number}} opts
+   *   `caCerts` IS THE TRUST BOUNDARY: a proof is accepted only if its issuer chains
+   *   to one of those roots. Choose it deliberately -- it is the whole security
+   *   decision. `vicalUrl` opts in to a network-fetched issuer trust list (ISO
+   *   18013-5 VICAL); the default is NONE, because a trust boundary that changes
+   *   with the weather is not a trust boundary. `threshold` is the age in "over N"
+   *   (PRD D6, default 18); the output stays a single bit either way.
+   * @returns {Promise<Verifier>}
    */
-  static async start(opts = {}) {
-    const threshold = opts.threshold ?? 18;
+  static async start(opts) {
+    const threshold = opts?.threshold ?? 18;
     if (!Number.isInteger(threshold) || threshold < 1) {
-      throw new TypeError(`threshold must be a positive integer, got ${opts.threshold}`);
+      throw new TypeError(`threshold must be a positive integer, got ${opts?.threshold}`);
     }
     const service = new VerifierService(opts);
     await service.start();
@@ -64,11 +70,22 @@ export class Verifier {
     return this.#service.circuitsLoaded;
   }
 
-  /** @returns {Promise<{ok: boolean, over_threshold: boolean|null, reason: string, detail?: string}>} */
+  /** Exactly whom this verifier trusts, counted from the child's own log. */
+  get trustAnchors() {
+    return this.#service.trustAnchors;
+  }
+
+  /**
+   * Verify one proof. Never throws.
+   *
+   * @param {import('./types.js').Proof} proof
+   * @returns {Promise<import('./types.js').Verdict>}
+   */
   async check(proof) {
     return classify(await this.#service.verify(proof), { requiredClaim: this.#requiredClaim });
   }
 
+  /** @returns {Promise<void>} */
   async stop() {
     return this.#service.stop();
   }

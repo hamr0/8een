@@ -54,15 +54,31 @@ const PROOF_IS_BAD = new Map([
 
 const VERIFY_FAILURE = /^verification failure: return code (\d+)$/;
 
+/**
+ * @param {boolean} over_threshold
+ * @param {string} reason
+ * @param {string} [detail]
+ * @returns {import('./types.js').Verdict}
+ */
 const answered = (over_threshold, reason, detail) => ({ ok: true, over_threshold, reason, detail });
+
+/**
+ * @param {string} reason
+ * @param {string} [detail]
+ * @returns {import('./types.js').Verdict}
+ */
 const unanswerable = (reason, detail) => ({ ok: false, over_threshold: null, reason, detail });
 
 /**
- * @param {object} raw   outcome of one exchange, from the service wrapper:
- *                       {kind:'response', status, body} | {kind:'timeout'}
- *                       | {kind:'unreachable', detail} | {kind:'not_ready'}
- * @param {object} opts  {requiredClaim: 'age_over_18'} -- PRD D6, configurable
- *                       threshold, single-bit output.
+ * Turn one exchange with the verifier into one bit.
+ *
+ * @param {*} raw  An {@link import('./types.js').Outcome} in the happy case --
+ *   but typed `*` deliberately, because this is the never-throws boundary. It is
+ *   handed whatever the wire produced, including garbage, and must return a
+ *   verdict for all of it rather than trusting its input's shape.
+ * @param {{requiredClaim?: string}} [opts]  The claim the caller requires, e.g.
+ *   `age_over_18`. PRD D6: the threshold is configurable; the output stays one bit.
+ * @returns {import('./types.js').Verdict}
  */
 export function classify(raw, opts = {}) {
   const requiredClaim = opts.requiredClaim ?? 'age_over_18';

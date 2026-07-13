@@ -12,6 +12,13 @@ below).
 
 ### Added
 - `Verifier` — the public surface. `check(proof)` → `{ok, over_threshold, reason}`.
+- **TypeScript types**, generated from JSDoc (`tsc`, `checkJs` + `strictNullChecks`)
+  and built into the tarball on publish. JSDoc is the only hand-authored source of
+  types, so the `.d.ts` cannot drift from the code — `tsc --noEmit` gates every
+  push and every publish.
+- **`8een.context.md`** — the complete adopter contract: every option, the public
+  API, the trust-anchor decision, the threat model, and the refusals. Ships in the
+  package. Point an integrating agent at this file.
 - `verdict.js` — pure, never throws, zero dependencies. Turns one exchange with
   the verifier into one bit.
 - `service.js` — supervises the longfellow Go verifier as a long-lived child

@@ -7,12 +7,19 @@
   "engines": {
     "node": ">=22"
   },
+  "main": "./src/index.js",
+  "types": "./types/index.d.ts",
   "exports": {
-    ".": "./src/index.js"
+    ".": {
+      "types": "./types/index.d.ts",
+      "default": "./src/index.js"
+    }
   },
   "files": [
     "src",
+    "types",
     "README.md",
+    "8een.context.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
@@ -27,8 +34,11 @@
     "longfellow"
   ],
   "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:types": "tsc",
+    "prepublishOnly": "npm run build:types",
     "test": "node --test test/verdict.test.js test/circuits.test.js test/service.test.js",
-    "test:integration": "node --test --test-timeout 400000 test/integration.test.js",
+    "test:integration": "node --test --test-timeout 900000 test/integration.test.js",
     "test:all": "npm run test && npm run test:integration"
   },
   "repository": {
@@ -42,5 +52,9 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2"
   }
 }

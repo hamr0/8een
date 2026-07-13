@@ -1,0 +1,49 @@
+# Push / PR gate (LIBRARY_CONVENTIONS §5): typecheck -> build:types -> test.
+#
+# No lint step, deliberately: `tsc` with checkJs + strictNullChecks already
+# catches the bug class that matters, and pulling in the ESLint ecosystem
+# (devDeps, flat config, a new failure surface) cuts against the dependency
+# hierarchy for a small vanilla-ESM library.
+#
+# COVERAGE, stated rather than implied: this runs the UNIT suite only. The
+# integration suite drives a real longfellow verifier, which needs a C++/cgo
+# build no clean runner has. It runs locally before a release and its evidence
+# lives in docs/02-evidence/M1-EVIDENCE.md. A green run here is NOT a claim that
+# the integration suite passed.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        # Dependency-free at runtime, but the types toolchain is a devDependency,
+        # so there is a lockfile. `npm ci` when it's present; `npm install` if not.
+        run: |
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+
+      - name: Typecheck (JSDoc is a checked contract)
+        run: npm run typecheck
+
+      - name: Build types
+        run: npm run build:types
+
+      - name: Test (unit)
+        run: npm test
