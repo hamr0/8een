@@ -1,5 +1,5 @@
 {
-  "name": "8een",
+  "name": "zk8een",
   "version": "0.1.0",
   "description": "A ZK age verifier a site can actually drop in. Proves over-18 without learning who you are.",
   "license": "Apache-2.0",
