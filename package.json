@@ -10,6 +10,22 @@
   "exports": {
     ".": "./src/index.js"
   },
+  "files": [
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "age-verification",
+    "zero-knowledge",
+    "zkp",
+    "mdoc",
+    "mdl",
+    "eidas",
+    "privacy",
+    "longfellow"
+  ],
   "scripts": {
     "test": "node --test test/verdict.test.js test/circuits.test.js test/service.test.js",
     "test:integration": "node --test --test-timeout 400000 test/integration.test.js",
@@ -18,5 +34,13 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/hamr0/8een.git"
+  },
+  "homepage": "https://github.com/hamr0/8een#readme",
+  "bugs": {
+    "url": "https://github.com/hamr0/8een/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
