@@ -1,6 +1,8 @@
 /**
  * Drives the real longfellow verifier service. Slow by nature: the circuit load
- * is 44-47s per server, and this suite starts three.
+ * is 44-73s per server and this suite starts seven, so it runs ~4 minutes. The
+ * trust-anchor tests use a one-circuit directory (they never verify a proof),
+ * which keeps that from becoming ~8.
  *
  * Requires the POC clone to be materialized (see poc/M0-EVIDENCE.md step 1).
  * Skips cleanly when it is absent, so a fresh checkout still runs green on the
@@ -49,13 +51,30 @@ function wellFormedTrustList() {
   return out;
 }
 
+const CIRCUIT_SOURCE = join(POC, 'lib/circuits/mdoc/circuits');
+
 const RIG = {
   binary: join(SERVER_DIR, 'server'),
-  circuitDir: join(POC, 'lib/circuits/mdoc/circuits'),
+  circuitDir: CIRCUIT_SOURCE,
   caCerts: wellFormedTrustList(),
   // vicalUrl is deliberately NOT set: the suite exercises 8een's real default,
   // which fetches no trust list at all. Trust here is exactly the PEM bundle.
 };
+
+/**
+ * A directory holding exactly ONE circuit. The trust-anchor tests below never
+ * verify a proof -- they assert on what the verifier trusts -- so they do not
+ * need all 17 circuits, and loading one takes ~4s instead of ~45-70s. The
+ * all-expected-circuits-loaded guard is still satisfied (1 present, 1 loaded), so
+ * this shortens the suite without weakening what it checks.
+ */
+function oneCircuitDir() {
+  if (!existsSync(CIRCUIT_SOURCE)) return CIRCUIT_SOURCE;
+  const dir = mkdtempSync(join(tmpdir(), '8een-onecircuit-'));
+  const first = readdirSync(CIRCUIT_SOURCE).filter((f) => /^[0-9a-f]{64}$/.test(f)).sort()[0];
+  writeFileSync(join(dir, first), readFileSync(join(CIRCUIT_SOURCE, first)));
+  return dir;
+}
 const PINNED_CLOCK = { ZKVERIFY_FAKE_TIME: '2026-04-01T00:00:00Z' };
 
 const available = existsSync(RIG.binary) && existsSync(RIG.circuitDir);
@@ -127,7 +146,7 @@ test('refuses a trust list that silently truncated', suite, async () => {
   assert.equal(present, 19, 'upstream ships 19 certificates');
 
   await assert.rejects(
-    Verifier.start({ ...RIG, caCerts: UPSTREAM_CERTS, port: 8918, env: PINNED_CLOCK }),
+    Verifier.start({ ...RIG, circuitDir: oneCircuitDir(), caCerts: UPSTREAM_CERTS, port: 8918, env: PINNED_CLOCK }),
     /trust list silently truncated.*19 certificates but the verifier loaded only 17/s,
     'two issuer CAs vanishing without a word must not be survivable',
   );
@@ -143,7 +162,7 @@ test('refuses to start when it trusts nobody', suite, async () => {
   writeFileSync(empty, '# a trust list with no certificates in it\n');
 
   await assert.rejects(
-    Verifier.start({ ...RIG, caCerts: empty, port: 8916, env: PINNED_CLOCK }),
+    Verifier.start({ ...RIG, circuitDir: oneCircuitDir(), caCerts: empty, port: 8916, env: PINNED_CLOCK }),
     /trusts 0 issuer certificates/,
     'a verifier with no trust anchors must not come up',
   );
@@ -154,7 +173,7 @@ test('refuses to start when it trusts nobody', suite, async () => {
 // boundary by accident -- and must verify, from the child's own log, that it did
 // not get one.
 test('does not silently acquire trust anchors over the network', suite, async (t) => {
-  const service = new VerifierService({ ...RIG, port: 8917, env: PINNED_CLOCK });
+  const service = new VerifierService({ ...RIG, circuitDir: oneCircuitDir(), port: 8917, env: PINNED_CLOCK });
   await service.start();
   t.after(() => service.stop());
 

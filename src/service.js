@@ -62,29 +62,39 @@ const DEFAULTS = {
  * straddles the boundary -- and here that means losing a circuit from the count,
  * or, if the split lands inside the only matching line, counting zero and
  * refusing to start against a perfectly healthy server. So carry the remainder.
+ *
+ * @param {string} residual  the unterminated tail of the previous chunk
+ * @param {string} chunk     the chunk just delivered
+ * @returns {{lines: string[], residual: string}}
  */
 export function splitLines(residual, chunk) {
   const parts = (residual + chunk).split('\n');
-  return { lines: parts.slice(0, -1), residual: parts.at(-1) };
+  return { lines: parts.slice(0, -1), residual: parts.at(-1) ?? '' };
 }
 
 export class VerifierService {
+  /** @type {import('node:child_process').ChildProcessByStdio<null, import('node:stream').Readable, import('node:stream').Readable> | null} */
   #child = null;
   #ready = false;
   #circuits = 0;
   #expected = 0;
+  /** @type {string[]} */
   #skipped = [];
   #anchors = 0; // issuer CAs the child says it loaded from the PEM bundle
   #anchorsExpected = 0; // certificates actually present in that PEM bundle
   #vical = 0; // issuer CAs pulled from a network trust list
   #started = false; // the child announced it is listening
   #residual = '';
+  /** @type {string[]} */
   #logTail = [];
+  /** @type {import('./types.js').ChildExit | null} */
   #exit = null;
 
-  constructor(opts = {}) {
-    const missing = ['binary', 'circuitDir', 'caCerts'].filter((k) => !opts[k]);
+  /** @param {import('./types.js').ServiceInit} opts */
+  constructor(opts) {
+    const missing = ['binary', 'circuitDir', 'caCerts'].filter((k) => !opts?.[k]);
     if (missing.length) throw new TypeError(`VerifierService needs: ${missing.join(', ')}`);
+    /** @type {import('./types.js').ServiceOptions} */
     this.opts = { ...DEFAULTS, ...opts };
   }
 
@@ -109,6 +119,8 @@ export class VerifierService {
    * Starts the child and resolves only once it is genuinely able to verify.
    * Throws if it cannot get there -- a caller that never got a working verifier
    * must find out at boot, not on a visitor's first proof.
+   *
+   * @returns {Promise<this>}
    */
   async start() {
     const { binary, circuitDir, caCerts, host, port, vicalUrl, env, startupTimeoutMs } = this.opts;
@@ -121,7 +133,7 @@ export class VerifierService {
     this.#expected = countCircuitFiles(circuitDir);
     this.#anchorsExpected = countPemCertificates(caCerts);
 
-    this.#child = spawn(
+    const child = spawn(
       binary,
       [
         '-port', `${host}:${port}`,
@@ -136,8 +148,9 @@ export class VerifierService {
       // database URLs that have no business inside a subprocess).
       { env: { ...minimalEnv(), ...env }, stdio: ['ignore', 'pipe', 'pipe'] },
     );
+    this.#child = child;
 
-    this.#child.once('exit', (code, signal) => {
+    child.once('exit', (code, signal) => {
       this.#exit = { code, signal };
       this.#ready = false;
     });
@@ -147,20 +160,20 @@ export class VerifierService {
     // (EPIPE on a closed stdio pipe, EPERM on kill) would be rethrown by
     // EventEmitter as an uncaught exception -- taking down the host web server,
     // not merely the verifier. Degrade to "not ready" like every other breakage.
-    this.#child.on('error', (err) => {
+    child.on('error', (err) => {
       this.#ready = false;
       this.#exit ??= { code: null, signal: null, error: err.message };
       this.#logTail.push(`child error: ${err.message}`);
     });
 
     // ENOENT and friends: the binary isn't there, or isn't executable.
-    const spawned = once(this.#child, 'spawn').catch((err) => {
+    const spawned = once(child, 'spawn').catch((err) => {
       throw new Error(`cannot start verifier binary '${binary}': ${err.code ?? err.message}`);
     });
 
-    for (const stream of [this.#child.stdout, this.#child.stderr]) {
+    for (const stream of [child.stdout, child.stderr]) {
       stream.setEncoding('utf8');
-      stream.on('data', (chunk) => this.#absorb(chunk));
+      stream.on('data', (chunk) => this.#absorb(String(chunk)));
     }
 
     await spawned;

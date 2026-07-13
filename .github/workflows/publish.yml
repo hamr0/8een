@@ -1,62 +1,127 @@
-# Publish to npm.
+# Canonical npm publish workflow — copy to `.github/workflows/publish.yml`.
 #
-# MANUAL BY DESIGN (workflow_dispatch). Publishing is outward-facing and
-# effectively irreversible -- the registry mirrors and indexes within minutes,
-# and unpublishing does not recall the copies. It stays a deliberate human act,
-# never a side effect of a merge.
+# This is the `mailproof` workflow: npm trusted publishing via OIDC (no
+# NPM_TOKEN), idempotent (skips a version already on the registry), and it
+# asserts the END STATE rather than trusting npm's exit code.
 #
-#   gh workflow run publish.yml
+# Manual by default: it runs only when you click "Run workflow" (or via the
+# CLI). To also auto-publish when you cut a GitHub Release, add back:
+#   release:
+#     types: [published]
 #
-# Requires repo secret NPM_TOKEN (npmjs.com -> Access Tokens -> Granular/Automation).
-#
-# NOTE ON COVERAGE, stated rather than implied: this runs the UNIT suite only.
-# The integration suite drives a real longfellow verifier, which needs a C++/cgo
-# build that does not exist on a clean runner. It is run locally before release
-# and its evidence is in docs/02-evidence/M1-EVIDENCE.md. A green run here is
-# not a claim that the integration suite passed.
-
-name: publish
+# Before the first run: configure the trusted publisher at npmjs.com
+# (Package settings → Trusted Publisher → GitHub Actions: your repo + this
+# workflow file). `prepublishOnly` builds the .d.ts into the tarball at publish.
+name: Publish to npm
 
 on:
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Pack and inspect, publish nothing'
-        type: boolean
-        default: true
+  workflow_dispatch:        # manual "Run workflow" button — publish when you want
 
 permissions:
   contents: read
-  id-token: write # npm provenance
+  id-token: write           # required: lets npm mint OIDC credentials
+
+concurrency:                # never let two publish runs race
+  group: npm-publish
+  cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
         with:
+          # Native-addon repos (e.g. better-sqlite3) may need `20` instead if the
+          # pinned addon ships no prebuilt for the Node 22 ABI. npm@11 (below)
+          # supports both 20 and 22, so only this line changes.
           node-version: 22
-          registry-url: https://registry.npmjs.org
-
-      - name: Tests (unit)
-        run: npm test
-
-      - name: Show exactly what would ship
-        run: npm pack --dry-run
-
-      - name: Refuse to republish an existing version
+          registry-url: 'https://registry.npmjs.org'
+      - name: Upgrade npm (trusted publishing needs >= 11.5.1)
+        # Pinned to a major, NOT @latest: a floating npm eventually raises its Node
+        # floor above the runner's version and fails with EBADENGINE (npm@12 dropped
+        # Node 20). npm@11 is >= 11.5.1 for OIDC and runs on both Node 20 and 22.
+        #
+        # Native-addon repos on npm@12+ (Node 22+ only): npm@12 ALSO blocks
+        # dependency install-scripts by default, so `npm ci` silently skips native
+        # builds (better-sqlite3, node-gyp) and ships a module that crashes at
+        # runtime, not at install. To move to npm@12, commit an `allowScripts`
+        # allowlist (`npm approve-scripts --all --no-allow-scripts-pin`, then review)
+        # and add `--strict-allow-scripts` to the install below so an unapproved
+        # script fails the run loudly. Pure-JS repos are unaffected — stay on npm@11.
+        #
+        # CAVEAT — do NOT move a PUBLISHING workflow to npm@12 yet: npm 12.0.0's
+        # `npm publish --provenance` is broken (its libnpmpublish provenance.js does
+        # `require('sigstore')` but the tarball bundles only the `@sigstore/*` scoped
+        # packages → publish dies MODULE_NOT_FOUND). npm@11 bundles `sigstore` and
+        # publishes fine. Stay on npm@11 here until npm ships a fix; the allowScripts
+        # allowlist can already ride in package.json for end users on npm 12.
+        run: npm install -g npm@11
+      - name: Install dependencies
+        # Use `npm ci` when a lockfile is present (reproducible installs for
+        # projects with dependencies). Dependency-free repos have no
+        # package-lock.json — `npm ci` errors there (EUSAGE), so fall back to
+        # `npm install` (a fast no-op when there's nothing to install).
         run: |
-          V=$(node -p "require('./package.json').version")
-          if npm view "8een@$V" version >/dev/null 2>&1; then
-            echo "::error::8een@$V is already published. Bump the version."
+          if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then
+            npm ci
+          else
+            npm install --no-audit --no-fund
+          fi
+      - name: Typecheck
+        run: npm run typecheck --if-present
+      - name: Test
+        run: npm test --if-present
+      - name: Skip if this version is already on npm
+        id: check
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view "$NAME@$VERSION" version 2>/dev/null || true)
+          if [ -n "$PUBLISHED" ]; then
+            echo "::notice::$NAME@$VERSION already published — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish
+        if: steps.check.outputs.skip == 'false'
+        run: |
+          # npm's OIDC trusted-publishing flow can exit non-zero from a trailing
+          # "generate Web Auth URLs" call (HTTP 401) AFTER the tarball +
+          # provenance have already been committed to the registry — making the
+          # step go red on a publish that actually succeeded. So don't trust the
+          # exit code: run the publish, then assert the END STATE (is the version
+          # on the registry?). A genuine failure — where the version is NOT on
+          # npm AND npm exited non-zero — still fails the step. (A blanket
+          # `|| true` would instead hide real failures, which is worse.)
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          PUBLISH_EXIT=0
+          npm publish --provenance --access public || PUBLISH_EXIT=$?
+          # Registry read-after-write can lag well past 15s. Poll generously
+          # (~2 min) so the end-state check doesn't false-negative a publish that
+          # actually succeeded. `npm view` caches, so --prefer-online bypasses it.
+          PUBLISHED=""
+          for _ in $(seq 1 20); do
+            PUBLISHED=$(npm view "$NAME@$VERSION" version --prefer-online 2>/dev/null || true)
+            [ "$PUBLISHED" = "$VERSION" ] && break
+            sleep 6
+          done
+          if [ "$PUBLISHED" = "$VERSION" ]; then
+            # End state confirmed. If npm exited non-zero, that's the OIDC-401
+            # case above — downgrade to a warning.
+            if [ "$PUBLISH_EXIT" -ne 0 ]; then
+              echo "::warning::npm publish exited $PUBLISH_EXIT but $NAME@$VERSION is on the registry (known npm OIDC post-publish web-auth 401); treating as success."
+            fi
+            echo "✅ Published $NAME@$VERSION"
+          elif [ "$PUBLISH_EXIT" -eq 0 ]; then
+            # npm reported success (exit 0 = the upload HTTP call succeeded) but
+            # the registry still isn't reflecting it after the poll window. Trust
+            # the success exit here — the benign inverse of the OIDC-401 case.
+            echo "::warning::npm publish exited 0 but $NAME@$VERSION not yet visible after ~2 min (registry reflection lag); treating as success."
+            echo "✅ Published $NAME@$VERSION (npm exit 0; registry lagging)"
+          else
+            echo "::error::npm publish failed (exit $PUBLISH_EXIT) and $NAME@$VERSION is NOT on the registry."
             exit 1
           fi
-          echo "8een@$V is new — ok to publish"
-
-      - name: Publish
-        if: ${{ !inputs.dry_run }}
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
