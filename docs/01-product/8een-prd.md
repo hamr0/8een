@@ -19,10 +19,15 @@ stack still cannot consume ZK proofs." **M1 PASSED** (2026-07-13, v0.1.0 —
 > with reasoning; check it before entertaining any feature request. The PRD
 > wins on **intent**; the SPEC (when it lands) wins on **mechanism**. Design
 > decisions get logged in `../03-logs/decisions-log.md` — don't re-litigate
-> them unless the owner explicitly asks. Dev standards:
-> `.claude/remember/AGENT_RULES.md` (POC-first, vanilla→stdlib→external,
-> vetted crypto always, Testing Trophy). The owner gates every milestone
-> with an explicit "go" — never proceed to the next rung without it.
+> them unless the owner explicitly asks. **Dev standards live outside this repo**
+> and are not vendored into it: `~/Documents/PycharmProjects/hamr0/AGENT_RULES.md`
+> (POC-first, vanilla→stdlib→external, vetted crypto always, Testing Trophy) and
+> `~/Documents/PycharmProjects/hamr0/LIBRARY_CONVENTIONS.md` (JS library shape,
+> JSDoc → `.d.ts` with no drift, the doc set, CI, OIDC publishing, agent scratch
+> out of git). Both bind this project; where they disagree with each other,
+> **AGENT_RULES wins**, and where either disagrees with this PRD on *intent*, the
+> PRD wins. The owner gates every milestone with an explicit "go" — never proceed
+> to the next rung without it.
 
 ---
 
