@@ -91,7 +91,7 @@ anchors, different verdict. The trust list is load-bearing, and it is checked.
 | Proof chained to a cert **not on the list** | **Covered** — stranger-CA test, both directions |
 | **Tampered** proof (flipped byte) | **Covered** |
 | Wrong **session transcript** | **Covered** |
-| **Under-threshold** proof | **Partial** — a valid over-18 proof correctly fails a site asking for over-21 (`claim_absent`). A genuine *underage holder's* proof (`age_over_18 = false`) is unit-tested against the observed wire format, but **no real one exists to test against until M2's test-CA.** Stated, not glossed. |
+| **Under-threshold** proof | **Logic covered, fixture pending.** `age_over_18` is an issuer-signed boolean in the mdoc, so an underage holder's proof asserts `false` (CBOR `0xF4`) and we return `over_threshold:false` via `claim_false` — unit-tested against the observed wire format. Also covered: a valid over-18 proof correctly fails a site asking for over-21 (`claim_absent`). M2's test-CA supplies a real underage credential to run the path end-to-end; nothing about the logic is in question. |
 | **Replayed** proof | **NOT COVERED — BY DESIGN. See below.** |
 
 Also covered: mangled cert chain, outright garbage, an unreadable claim value
@@ -121,7 +121,8 @@ M1 does not claim replay protection and must never be described as providing it.
   option and appears nowhere in 8een's code** — it cannot ship. Every **reject**
   path above is clock-independent or ran on the **real** clock. A natively-valid
   credential arrives with M2's test-CA and this scaffolding goes away.
-- **Under-threshold is not fully closed** — see the matrix. M2.
+- **Under-threshold: fixture pending, not logic pending** — see the matrix. M2's
+  test-CA mints a real underage credential and the path runs end-to-end.
 - **Circuit count is 17**, not the 16 recorded in M0 (the 18th directory entry is
   a README). Corrected here.
 - Two integrity checks now stand between a hostile network and the verifier:
