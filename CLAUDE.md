@@ -79,3 +79,13 @@ half-load, and prove it can't.
   expired 2026-05-07. M2's test-CA removes the scaffolding.
 - **Measure before you write a number.** "A few seconds" was wrong by 10× once
   already and had to be retracted in writing.
+  
+<!-- MEMORY:START -->
+@.claude/remember/MEMORY.md
+<!-- MEMORY:END -->
+
+<!-- AGENT_RULES:START -->
+Consult when building something new or adding a feature — a standards guide, not hot
+context like MEMORY.md above:
+@.claude/remember/AGENT_RULES.md
+<!-- AGENT_RULES:END -->
