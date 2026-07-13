@@ -229,7 +229,13 @@ Other properties:
   (~10.5 MB, built from C++/cgo). **This package does not ship it**, so
   `npm install zk8een` alone will not verify anything. Bundling or building it is
   tracked work, not a decision you can configure around today.
-- **No EU trust-list ingestion.** The reference verifier consumes a PEM bundle and
-  an ISO 18013-5 VICAL (the US/AAMVA format). eIDAS Trusted Lists are signed XML
-  and there is no path for them. If you are deploying in the EU, your anchors come
-  from your own PEM bundle.
+- **No EU trust-list ingestion — but the anchors now exist.** 8een consumes a PEM
+  bundle and an ISO 18013-5 VICAL (the US/AAMVA format); it does **not** parse the
+  ETSI-signed XML that eIDAS trust lists use. What has changed is the source: the EU
+  now publishes a dedicated **AV Trusted List** (ETSI XML, service type `PAA`, for
+  `eu.europa.ec.av.*` credentials), with an acceptance environment for testing. So
+  an EU deployment is no longer a dead end — you extract the PAA X.509 certificates
+  from that list and drop them into the PEM bundle you pass as `caCerts`. That
+  extraction is your step, not 8een's: the XML is signed and 8een does not verify
+  that signature, so treat the list as input you vouch for, exactly as you would any
+  PEM you assemble by hand.
