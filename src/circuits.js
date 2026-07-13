@@ -32,8 +32,21 @@ export { manifest };
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
+const CIRCUIT_ID = /^[0-9a-f]{64}$/;
+
 const sourceUrl = (id) =>
   `https://raw.githubusercontent.com/google/longfellow-zk/${manifest.commit}/${manifest.path}/${id}`;
+
+/**
+ * A circuit id becomes both a filesystem path and a URL, so it is a trust
+ * boundary even though the manifest ships in our own tree. An id of "../../x"
+ * would write outside the circuit directory. Cheap to assert, so assert it.
+ */
+function assertCircuitId(id) {
+  if (typeof id !== 'string' || !CIRCUIT_ID.test(id)) {
+    throw new Error(`manifest contains a malformed circuit id: ${JSON.stringify(id)}`);
+  }
+}
 
 /**
  * Ensures every pinned circuit is present in `dir` and byte-correct.
@@ -52,6 +65,7 @@ export async function provision(dir, opts = {}) {
   const total = manifest.circuits.length;
 
   for (const [i, circuit] of manifest.circuits.entries()) {
+    assertCircuitId(circuit.id);
     const path = join(dir, circuit.id);
     const n = i + 1;
 
@@ -89,6 +103,18 @@ async function fetchCircuit(circuit, path, fetchImpl) {
   }
   if (!res.ok) {
     throw new Error(`circuit ${circuit.id.slice(0, 12)}: ${url} returned HTTP ${res.status}`);
+  }
+
+  // Refuse an oversized body BEFORE reading it into memory. Waiting for the
+  // sha256 to catch a bad download is fine for correctness and useless for
+  // availability: a hostile or compromised host answering with a 10 GB body
+  // would exhaust memory long before we ever got to hash it.
+  const advertised = Number(res.headers?.get?.('content-length'));
+  if (Number.isFinite(advertised) && advertised > circuit.bytes) {
+    throw new Error(
+      `circuit ${circuit.id.slice(0, 12)}: ${url} advertises ${advertised} bytes, ` +
+        `expected ${circuit.bytes}. Refusing to download it.`,
+    );
   }
 
   const bytes = Buffer.from(await res.arrayBuffer());

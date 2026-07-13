@@ -23,12 +23,16 @@
 
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { setTimeout as delay } from 'node:timers/promises';
 
 const CIRCUIT_LOADED = /(?:^|\s)Read ([0-9a-f]{64})\s*$/;
 const CIRCUIT_SKIPPED = /ignoring file ([0-9a-f]{64})/;
 const CIRCUIT_FILE = /^[0-9a-f]{64}$/;
+const ISSUER_CA = /adding Issuer CA /;
+const VICAL_LOADED = /Loaded (\d+) certificates from VICAL/;
+const SERVER_STARTED = /"msg":"Starting server"/;
+const PEM_CERTIFICATE = /-----BEGIN CERTIFICATE-----/g;
 
 const DEFAULTS = {
   host: '127.0.0.1', // loopback, never 0.0.0.0 -- upstream's ":8888" default binds every interface
@@ -36,6 +40,20 @@ const DEFAULTS = {
   startupTimeoutMs: 180_000, // circuit load measured at 44-73s; leave room for a slower box
   requestTimeoutMs: 10_000, // a verify is ~0.4-0.7s; 10s means something is wrong
   shutdownGraceMs: 5_000,
+
+  // NO trust list is fetched over the network unless you ask for one.
+  //
+  // Upstream defaults -vical_url to https://vical.dts.aamva.org/vical/vc and
+  // pulls 22 AAMVA (US motor-vehicle) issuer certs into the trust pool at every
+  // boot -- and a failed fetch is non-fatal, so the anchor set silently varies
+  // with the weather. For a component whose entire success criterion is trust
+  // discrimination (PRD §7.1/D5), the anchor set is THE security boundary: it
+  // must be a deliberate, deterministic, offline choice, not whatever a
+  // third-party URL served this morning. Trust is project config.
+  //
+  // Set vicalUrl explicitly to opt in. Keeping an anchor list current is the
+  // operator's job, and the operator should know they have one.
+  vicalUrl: null,
 };
 
 /**
@@ -56,6 +74,10 @@ export class VerifierService {
   #circuits = 0;
   #expected = 0;
   #skipped = [];
+  #anchors = 0; // issuer CAs the child says it loaded from the PEM bundle
+  #anchorsExpected = 0; // certificates actually present in that PEM bundle
+  #vical = 0; // issuer CAs pulled from a network trust list
+  #started = false; // the child announced it is listening
   #residual = '';
   #logTail = [];
   #exit = null;
@@ -72,6 +94,11 @@ export class VerifierService {
 
   get circuitsLoaded() {
     return this.#circuits;
+  }
+
+  /** Exactly whom this verifier trusts, counted from the child's own log. */
+  get trustAnchors() {
+    return { pem: this.#anchors, vical: this.#vical, total: this.#anchors + this.#vical };
   }
 
   get origin() {
@@ -92,6 +119,7 @@ export class VerifierService {
     // others. Knowing the target up front is what lets us tell "ready" apart
     // from "ready enough to look fine until the wrong visitor turns up".
     this.#expected = countCircuitFiles(circuitDir);
+    this.#anchorsExpected = countPemCertificates(caCerts);
 
     this.#child = spawn(
       binary,
@@ -99,9 +127,14 @@ export class VerifierService {
         '-port', `${host}:${port}`,
         '-circuit_dir', circuitDir,
         '-cacerts', caCerts,
-        ...(vicalUrl ? ['-vical_url', vicalUrl] : []),
+        // ALWAYS explicit. Omitting the flag hands the trust boundary to
+        // upstream's default, which is a network fetch of a US DMV list.
+        '-vical_url', vicalUrl ?? '',
       ],
-      { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] },
+      // Least privilege: the verifier needs a handful of variables, not the host
+      // process's entire environment (which routinely holds API keys, tokens and
+      // database URLs that have no business inside a subprocess).
+      { env: { ...minimalEnv(), ...env }, stdio: ['ignore', 'pipe', 'pipe'] },
     );
 
     this.#child.once('exit', (code, signal) => {
@@ -144,8 +177,12 @@ export class VerifierService {
       this.#logTail.push(line);
       if (this.#logTail.length > 50) this.#logTail.shift();
       if (CIRCUIT_LOADED.test(line)) this.#circuits += 1;
+      if (ISSUER_CA.test(line)) this.#anchors += 1;
+      if (SERVER_STARTED.test(line)) this.#started = true;
       const skipped = line.match(CIRCUIT_SKIPPED);
       if (skipped) this.#skipped.push(skipped[1]);
+      const vical = line.match(VICAL_LOADED);
+      if (vical) this.#vical += Number(vical[1]);
     }
   }
 
@@ -170,7 +207,19 @@ export class VerifierService {
       // ALL of them, not merely some. Upstream skips a circuit it cannot verify
       // and carries on, so `> 0` would bless a server that answers some proofs
       // and rejects others for reasons that have nothing to do with the holder.
-      if (this.#circuits >= this.#expected && (await this.#alive())) {
+      // Wait for the child's OWN "Starting server" line, not merely an open port.
+      // The log is an ordered stream, so once we have processed that line we are
+      // guaranteed to have processed every line before it -- every circuit, every
+      // issuer CA, every VICAL result. Gating on the port instead would let us
+      // audit counts that were written but not yet read: a race in which a
+      // network trust list could load and we would not have noticed yet.
+      if (this.#started && this.#circuits >= this.#expected && (await this.#alive())) {
+        try {
+          this.#assertTrustAnchors();
+        } catch (err) {
+          await this.stop(); // never leave a child running behind a failed start
+          throw err;
+        }
         this.#ready = true;
         return;
       }
@@ -199,6 +248,60 @@ export class VerifierService {
       );
     }
     throw new Error(`verifier did not become ready within ${timeoutMs}ms`);
+  }
+
+  /**
+   * Don't trust the config -- confirm from the child's own log what it actually
+   * trusts. Two ways this goes wrong, and both produce a verifier that answers
+   * confidently and wrongly:
+   *
+   *   - ZERO anchors. Every proof is then rejected as issuer_untrusted, which is
+   *     shaped exactly like a genuine "no". This is the circuit trap again,
+   *     wearing the trust list's clothes: an 8een that trusts nobody turns away
+   *     every legitimate adult and sounds completely sure of itself.
+   *   - Anchors we did NOT ask for. If a network trust list loaded while
+   *     vicalUrl was null, our trust boundary is wider than the operator
+   *     configured, and it widened over the network.
+   */
+  #assertTrustAnchors() {
+    if (this.#vical > 0 && !this.opts.vicalUrl) {
+      throw new Error(
+        `verifier loaded ${this.#vical} issuer certificates from a network trust list that was ` +
+          `never configured. 8een's trust boundary must be a deliberate, offline choice. Refusing to serve.`,
+      );
+    }
+
+    // The trust list silently truncates. Upstream's LoadIssuerRootCA does
+    //     block, rest := pem.Decode(rootPem); if block == nil { break }
+    // and returns nil -- SUCCESS -- having quietly stopped early. Observed on
+    // upstream's own certs.pem: 19 certificates in the file, 17 loaded, no error.
+    // The cause was a malformed boundary at line 142, where an END and a BEGIN
+    // marker share a line:
+    //     -----END CERTIFICATE----------BEGIN CERTIFICATE-----
+    // Fix that one line and all 19 load.
+    //
+    // This is the worst possible place for a silent partial load. An operator who
+    // appends their issuer CA to a bundle with a bad boundary gets it dropped
+    // without a word -- and then every proof from that issuer is rejected as
+    // issuer_untrusted, confidently, by a verifier reporting perfect health.
+    if (this.#anchors < this.#anchorsExpected) {
+      throw new Error(
+        `trust list silently truncated: '${this.opts.caCerts}' contains ${this.#anchorsExpected} ` +
+          `certificates but the verifier loaded only ${this.#anchors}. Every issuer in the missing ` +
+          `${this.#anchorsExpected - this.#anchors} would be rejected as untrusted, with no error ` +
+          `anywhere. Check for a malformed PEM boundary (an "-----END CERTIFICATE-----" and the next ` +
+          `"-----BEGIN CERTIFICATE-----" sharing a line will stop parsing dead). Refusing to serve.`,
+      );
+    }
+
+    const total = this.#anchors + this.#vical;
+    if (total === 0) {
+      throw new Error(
+        `verifier trusts 0 issuer certificates (from '${this.opts.caCerts}'). It would reject every ` +
+          `proof as issuer_untrusted -- indistinguishable from a genuine "no", and every legitimate ` +
+          `adult would be turned away by a verifier that sounds certain. Refusing to serve.`,
+      );
+    }
   }
 
   #circuitFailure(what) {
@@ -279,6 +382,23 @@ export class VerifierService {
       child.kill('SIGKILL');
       await gone;
     }
+  }
+}
+
+/** What a Go binary genuinely needs, and nothing the host happens to be holding. */
+function minimalEnv() {
+  const keep = ['PATH', 'HOME', 'TMPDIR', 'LANG', 'LC_ALL', 'SSL_CERT_FILE', 'SSL_CERT_DIR'];
+  return Object.fromEntries(
+    keep.filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]]),
+  );
+}
+
+/** How many certificates the PEM bundle actually contains, whatever the child manages to load. */
+function countPemCertificates(file) {
+  try {
+    return (readFileSync(file, 'utf8').match(PEM_CERTIFICATE) ?? []).length;
+  } catch {
+    return 0; // unreadable bundle: zero anchors, and we refuse to serve
   }
 }
 

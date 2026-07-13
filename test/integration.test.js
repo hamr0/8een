@@ -27,14 +27,34 @@ import { Verifier, VerifierService, REASONS } from '../src/index.js';
 
 const POC = new URL('../poc/longfellow-zk/', import.meta.url).pathname;
 const SERVER_DIR = join(POC, 'reference/verifier-service/server');
+const UPSTREAM_CERTS = join(SERVER_DIR, 'certs.pem');
+
+/**
+ * Upstream's own certs.pem is malformed: at line 142 an "-----END CERTIFICATE-----"
+ * and the next "-----BEGIN CERTIFICATE-----" share a line, which stops Go's
+ * pem.Decode dead -- 19 certificates in the file, 17 loaded, no error reported.
+ * 8een refuses to run on a silently-truncated trust list (see the test below), so
+ * the rest of the suite needs a well-formed bundle. Repairing that one boundary
+ * loads all 19; verified.
+ */
+function wellFormedTrustList() {
+  if (!existsSync(UPSTREAM_CERTS)) return UPSTREAM_CERTS;
+  const dir = mkdtempSync(join(tmpdir(), '8een-certs-'));
+  const out = join(dir, 'certs.pem');
+  const repaired = readFileSync(UPSTREAM_CERTS, 'utf8').replaceAll(
+    '-----END CERTIFICATE----------BEGIN CERTIFICATE-----',
+    '-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----',
+  );
+  writeFileSync(out, repaired);
+  return out;
+}
+
 const RIG = {
   binary: join(SERVER_DIR, 'server'),
   circuitDir: join(POC, 'lib/circuits/mdoc/circuits'),
-  caCerts: join(SERVER_DIR, 'certs.pem'),
-  // Upstream defaults to fetching the AAMVA VICAL over the network at boot.
-  // Point it at a closed port: trust anchors in these tests come from the PEM
-  // bundle alone, so the trust list under test is the one we chose.
-  vicalUrl: 'http://127.0.0.1:1/no-vical',
+  caCerts: wellFormedTrustList(),
+  // vicalUrl is deliberately NOT set: the suite exercises 8een's real default,
+  // which fetches no trust list at all. Trust here is exactly the PEM bundle.
 };
 const PINNED_CLOCK = { ZKVERIFY_FAKE_TIME: '2026-04-01T00:00:00Z' };
 
@@ -93,6 +113,54 @@ test('refuses to start when only SOME circuits load', suite, async () => {
     /rejected at least \d+ of 17 circuit files as not matching their circuit id/,
     'a half-loaded verifier reports healthy and rejects real proofs -- it must not come up',
   );
+});
+
+// The worst place in the system for a silent partial load, and it is real.
+// Upstream's LoadIssuerRootCA does `if block == nil { break }` and returns nil --
+// SUCCESS -- having quietly stopped early. Its own certs.pem trips it: 19
+// certificates in the file, 17 loaded, not a word logged. An operator appending
+// their issuer CA to a bundle with a bad boundary would have it dropped in
+// silence, and then every proof from that issuer is rejected as untrusted by a
+// verifier reporting perfect health.
+test('refuses a trust list that silently truncated', suite, async () => {
+  const present = (readFileSync(UPSTREAM_CERTS, 'utf8').match(/-----BEGIN CERTIFICATE-----/g) || []).length;
+  assert.equal(present, 19, 'upstream ships 19 certificates');
+
+  await assert.rejects(
+    Verifier.start({ ...RIG, caCerts: UPSTREAM_CERTS, port: 8918, env: PINNED_CLOCK }),
+    /trust list silently truncated.*19 certificates but the verifier loaded only 17/s,
+    'two issuer CAs vanishing without a word must not be survivable',
+  );
+});
+
+// A verifier that trusts NOBODY rejects every proof as issuer_untrusted -- which
+// is shaped exactly like a genuine "no". The circuit trap, wearing the trust
+// list's clothes: every legitimate adult turned away by something that sounds
+// completely certain.
+test('refuses to start when it trusts nobody', suite, async () => {
+  const dir = mkdtempSync(join(tmpdir(), '8een-notrust-'));
+  const empty = join(dir, 'empty.pem');
+  writeFileSync(empty, '# a trust list with no certificates in it\n');
+
+  await assert.rejects(
+    Verifier.start({ ...RIG, caCerts: empty, port: 8916, env: PINNED_CLOCK }),
+    /trusts 0 issuer certificates/,
+    'a verifier with no trust anchors must not come up',
+  );
+});
+
+// Upstream defaults -vical_url to AAMVA's US motor-vehicle list and pulls 22
+// issuer certs over the network at every boot. 8een must not inherit a trust
+// boundary by accident -- and must verify, from the child's own log, that it did
+// not get one.
+test('does not silently acquire trust anchors over the network', suite, async (t) => {
+  const service = new VerifierService({ ...RIG, port: 8917, env: PINNED_CLOCK });
+  await service.start();
+  t.after(() => service.stop());
+
+  assert.equal(service.trustAnchors.vical, 0, 'no network trust list may load unless asked for');
+  assert.equal(service.trustAnchors.pem, 19, 'every certificate in the bundle, not merely most of them');
+  t.diagnostic(`trust anchors: ${JSON.stringify(service.trustAnchors)}`);
 });
 
 test('trust discrimination: the same proof passes or fails on the trust list alone', suite, async (t) => {

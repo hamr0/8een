@@ -36,7 +36,14 @@ export class Verifier {
    * @param {object} opts
    * @param {string} opts.binary      path to the longfellow verifier service
    * @param {string} opts.circuitDir  directory of circuit files
-   * @param {string} opts.caCerts     PEM bundle of trusted issuer roots
+   * @param {string} opts.caCerts     PEM bundle of trusted issuer roots. THIS IS
+   *   THE TRUST BOUNDARY: a proof is accepted only if its issuer chains to one of
+   *   these. Choose it deliberately -- it is the whole security decision.
+   * @param {string} [opts.vicalUrl]  opt in to a network-fetched issuer trust
+   *   list (ISO 18013-5 VICAL). Default: NONE. Upstream defaults this to AAMVA's
+   *   US motor-vehicle list and pulls it over the network at every boot; 8een
+   *   does not, because a trust boundary that changes with the weather is not a
+   *   trust boundary. If you set it, you are choosing to trust whoever it serves.
    * @param {number} [opts.threshold] the age in "over N" (PRD D6). Default 18.
    */
   static async start(opts = {}) {
