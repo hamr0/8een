@@ -1,0 +1,62 @@
+# Publish to npm.
+#
+# MANUAL BY DESIGN (workflow_dispatch). Publishing is outward-facing and
+# effectively irreversible -- the registry mirrors and indexes within minutes,
+# and unpublishing does not recall the copies. It stays a deliberate human act,
+# never a side effect of a merge.
+#
+#   gh workflow run publish.yml
+#
+# Requires repo secret NPM_TOKEN (npmjs.com -> Access Tokens -> Granular/Automation).
+#
+# NOTE ON COVERAGE, stated rather than implied: this runs the UNIT suite only.
+# The integration suite drives a real longfellow verifier, which needs a C++/cgo
+# build that does not exist on a clean runner. It is run locally before release
+# and its evidence is in docs/02-evidence/M1-EVIDENCE.md. A green run here is
+# not a claim that the integration suite passed.
+
+name: publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Pack and inspect, publish nothing'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Tests (unit)
+        run: npm test
+
+      - name: Show exactly what would ship
+        run: npm pack --dry-run
+
+      - name: Refuse to republish an existing version
+        run: |
+          V=$(node -p "require('./package.json').version")
+          if npm view "8een@$V" version >/dev/null 2>&1; then
+            echo "::error::8een@$V is already published. Bump the version."
+            exit 1
+          fi
+          echo "8een@$V is new — ok to publish"
+
+      - name: Publish
+        if: ${{ !inputs.dry_run }}
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
