@@ -85,6 +85,7 @@ half-load, and prove it can't.
     20-char timestamp, and the MSO validity window is a lexical string compare
     against it. Credential expiry is therefore NOT covered by any test. Only the
     *x509* clock is real. Do not let "M2 runs on the real clock" grow into a claim
-    that it does.
+    that it does. **Scheduled: PRD §7.4, owned by M4** (with the nonce — same
+    question, two halves). Named as a gap in the M2 matrix at PRD §7.1a.
 - **Measure before you write a number.** "A few seconds" was wrong by 10× once
   already and had to be retracted in writing.

@@ -95,6 +95,10 @@ window is a lexical string compare against it. **Credential expiry is exercised 
 test.** Only the x509 chain runs on real time; do not let "M2 runs on the real clock"
 grow into a claim that the credential does.
 
+Scheduled as **PRD §7.4 (M4)**: drive `nowStr` from real time, add an
+`expired-credential` scenario here — the same shape as `stale-nonce` — and assert the
+refusal in the integration matrix.
+
 ## Mint vs. present
 
 `Mint`/`MintCredential` issues a credential (issuer key, device key, salt, signed

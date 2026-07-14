@@ -162,7 +162,14 @@ still a hardcoded 20-char timestamp supplied by the holder, and the MSO
 `validFrom`/`validUntil` window is a lexical string compare against it. **Credential
 expiry is exercised by no test.** It is not in the PRD §7.1 matrix and so does not
 block M2, but "M2 runs on the real clock" is true of the certificate chain and false
-of the credential. Owed, and recorded as owed.
+of the credential.
+
+**Scheduled, not merely noted: PRD §7.4, owned by M4**, alongside the nonce — because
+"is this presentation still good *right now*" is one question with two halves, and the
+stateless verifier can answer neither alone. M4 must drive the credential clock from
+real time, add an `expired-credential` fixture (same shape as `stale-nonce`), and
+assert the refusal in the matrix. Recorded in the PRD §7.1a as a named gap in the M2
+matrix so it cannot be mistaken for covered.
 
 **post1.json could not come along, and that was measured, not assumed.** On the real
 clock the service rejects *every* post1-derived fixture at chain validation —
