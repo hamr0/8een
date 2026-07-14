@@ -4,6 +4,55 @@ All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) ·
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-07-14
+
+A documentation correction to the adopter contract, plus the M2 test-CA and
+fixture tooling — which is **dev-only and does not ship**. The runtime is
+byte-identical to `0.1.0`: `src/` and `types/` are untouched, dependencies are
+still zero, and every gap listed under `0.1.0` is still open. If you are an
+adopter, the only thing that changed for you is that one paragraph below was
+wrong.
+
+### Fixed
+- **The EU AV Trusted List exists, and `8een.context.md` said it didn't.** The
+  contract told EU deployers their anchors could only come from a PEM bundle they
+  assembled by hand, and implied there was no official source. There is: the EU now
+  publishes a dedicated **AV Trusted List** (ETSI-signed XML, service type `PAA`,
+  for `eu.europa.ec.av.*` credentials), with an acceptance environment for testing.
+  8een still does not parse ETSI XML — you extract the PAA X.509 certificates and
+  drop them into the PEM bundle you pass as `caCerts`, and because 8een does not
+  verify that XML signature, the list is input you vouch for. But an EU deployment
+  is no longer a dead end, and telling adopters otherwise was the kind of error that
+  makes people build the wrong thing.
+
+### Added (dev-only — outside the `files` allowlist, not in the tarball)
+- **`tools/mkfixture`** — a test-CA and fixture generator. Mints a synthetic ISO
+  18013-5 credential under a runtime-generated P-256 CA, proves it with
+  longfellow's own prover, and emits the negative matrix as fixtures: `valid`,
+  `untrusted-issuer`, `underage`, `tampered`. Certificates are issued on the real
+  wall clock, which is what will let the integration harness drop
+  `ZKVERIFY_FAKE_TIME`. No cryptography is authored (PRD NO-GO #8): signing is Go
+  stdlib, proving and verifying are longfellow's compiled code. Keys are generated
+  at runtime and never written to disk (PRD §10).
+- **The generator refuses to emit a fixture it has not verified.** It checks the
+  circuit by its **id** — via longfellow's own `circuit_id()`, because
+  `mdoc_zk.cc` disables that enforcement internally and states the application must
+  do it — rather than trusting the filename; and it re-verifies every fixture before
+  writing, asserting the document-signer certificate carries the exact key that
+  signed the MSO and that each proof reaches the verdict its scenario claims. A
+  truncated circuit, or a "tampered" proof whose byte-flip landed somewhere inert,
+  now fails generation instead of shipping as a test that silently passes.
+- **`poc/m2-spike/`** and **`docs/02-evidence/M2-EVIDENCE.md`** — the de-risking
+  spike and its measurements, including the load-bearing byte-layout constraints
+  the minter depends on.
+
+### Still true from 0.1.0
+M2 is **in progress, not passed**: the integration suite does not yet consume these
+fixtures, `ZKVERIFY_FAKE_TIME` is therefore still in the harness, and the
+stale/wrong-nonce row of the negative matrix is not written. Replay is still
+accepted by design. Nothing is published to npm at `0.1.1` — the package still
+drives a longfellow binary it does not ship.
+
 ## [0.1.0] — 2026-07-13
 
 M1 — the verify module. A ZK age proof goes in; one trustworthy bit comes out.
@@ -76,4 +125,5 @@ verify"*. It never says *"you are underage"*.
   clock-independent or runs on the real clock. M2's test-CA removes the
   scaffolding.
 
+[0.1.1]: https://github.com/hamr0/8een/releases/tag/v0.1.1
 [0.1.0]: https://github.com/hamr0/8een/releases/tag/v0.1.0
