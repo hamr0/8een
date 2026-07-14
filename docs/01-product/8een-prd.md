@@ -51,7 +51,7 @@ integrates it in one config block and forgets it.
 The cryptography is **never ours**: proofs are generated and verified by
 [google/longfellow-zk](https://github.com/google/longfellow-zk) (Apache-2.0,
 IETF draft `draft-google-cfrg-libzk`, under independent security review) —
-the same library the EU's own age-verification app uses in its demo build.
+the same library the EU's own age-verification app carries in every build.
 8een is the wrapper, the trust-anchor handling, the tests, the drop-in, and
 the documentation that make it adoptable.
 
@@ -62,18 +62,48 @@ that *to check a fact about a person you must collect the person*. The EU's
 own architecture concedes this is false — and then declines to implement the
 fix:
 
-- **The statute** — eIDAS 2.0 Art. 5a(16) — mandates the unlinkability
-  *outcome* but not the ZKP *technique*.
-- **The spec** — the age-verification blueprint's Annex B — designates the
-  Longfellow scheme, but as an optional "experimental feature"
-  (should-implement, not must-implement).
-- **The shipped code** — the EU AV app enables ZK proofs **only in the demo
-  build**; no production build does. The official verifier stack cannot
-  consume a ZK proof at all (it accepts only plain mdoc / SD-JWT VC, where
-  the relying party sees the actual credential). The production privacy story
-  is batch issuance of 30 single-use credentials — rate-limited linkability,
-  not unlinkability (issuer collusion links; exhaustion forces passport
-  re-scan). (Source: Yivi security analysis, 2026.)
+- **The statute** — eIDAS 2.0 Art. 5a(16)(a) — requires that the framework
+  "not allow providers of electronic attestations of attributes **or any other
+  party** … to obtain data that allows transactions or user behaviour to be
+  tracked, linked or correlated." It names the **issuer** as an adversary.
+  (5a(16)(b) is weaker — a duty to *"enable"* privacy-preserving techniques —
+  and the published OJ text spells it "unlikeability" *[sic]*. Lean on (a).)
+- **The spec** — the blueprint binds itself to RFC 2119, so ZKP is
+  **`SHOULD` (RECOMMENDED), not `MAY` (optional)** — §4.2 for the app, §4.4 for
+  the relying party — and the mechanism sits in the chapter titled
+  **"Experimental features"** (§7). The `SHALL` path is plain mdoc, where the
+  relying party sees the actual credential.
+- **The default privacy mechanism** — batch-issued single-use attestations
+  (recommended batch size 30, §3.4.1), each bound to a distinct device key.
+  Against **colluding relying parties this is genuinely unlinkable** — there is
+  no credential-borne correlator, and 8een must not claim otherwise. What it is
+  not: unlinkable against the **issuer**, who signs each attestation and could
+  recognise it. The spec's only answer is that it *"does not require"* the AP to
+  retain anything (§Data minimisation) — a policy, not a cryptographic
+  guarantee. It is also a finite anonymity budget (~30 presentations,
+  re-identification at least every 3 months). The spec's own Annex B §B.1 concedes
+  ZKP is what *"ensur[es] unlinkability."*
+- **The shipped code** — ZK is carried in **every** build of the EU AV app, but
+  a proof is only emitted **if the verifier asks for one**, and on the
+  **OpenID4VP path the wallet is never handed the ZK machinery at all**
+  (`DcqlRequestProcessor` takes no `zkSystemRepository` in wallet-core 0.28.1) —
+  so on the protocol the web actually uses, it **cannot** produce a proof. The
+  flagship OpenID4VP verifier backend contains **zero** ZK code (no dependency,
+  closed format dispatch, no ZK commit in its entire history) and cannot consume
+  one. When proof generation fails, the wallet's **default**
+  `ZkResponsePolicy.FallbackToFullDisclosure` **silently discloses the entire
+  document** — the library's own docs call the safe setting "recommended for
+  production use to prevent unintended full document disclosure", and neither the
+  app nor wallet-core ever sets it. Exactly one server-side ZK verifier exists —
+  `av-dc-api-backend`, a vendored copy of OpenWallet's Multipaz (the EU authored
+  ~370 lines of trust anchors, a doctype, and CORS; none of the cryptography) —
+  and it is deployed and live. It is a wallet SDK, not a drop-in.
+
+Every claim above is pinned to a file, a line, and a commit in
+`docs/02-evidence/EU-STACK-AUDIT.md`, which also records the **four earlier claims
+of ours that it retracted** — including two that were false and one that was unfair
+to the EU. The previous secondary-source citation (Yivi, 2026) is replaced by the
+primary sources throughout.
 
 **The refutation is an artifact, not an argument:** working, open code
 proving the one-bit unlinkable version is real and cheap to adopt — so that
@@ -102,8 +132,10 @@ Three actors; 8een is only the third:
    "a validly-signed credential behind this proof has
    `birthdate ≤ today − N years`", bound to the site's fresh nonce. The
    credential never leaves the phone; the proof shares no linkable pattern
-   with any other proof. *Exists (EU app demo build); we build only a test
-   prover for fixtures.*
+   with any other proof. *Exists in every EU app build — but only over the
+   browser DC API or proximity, never over OpenID4VP (see
+   `docs/02-evidence/EU-STACK-AUDIT.md` §2); we build only a test prover for
+   fixtures.*
 3. **Verifier** (8een, site-side) — takes proof + issuer trust anchor +
    nonce, runs the longfellow verifier, returns the single bit. Stateless;
    amnesia after every check.
@@ -138,7 +170,7 @@ bit; the API physically cannot return an age.
 | **M0 — POC spike** | Build longfellow-zk on Fedora; run its prover+verifier on its own sample credentials; observe valid→accept AND tampered→reject; **measure** verify time. Evidence log, not prose. Lives in `poc/`, never shipped. | "The C++ core builds and runs here at all." If M0 fails, everything re-plans. |
 | **M1 — verify module** | The pure verdict module + core wrapper, behavior-level tests incl. all §7 negatives. | "The binary's output can be classified into a trustworthy one-bit verdict." |
 | **M2 — full local loop** | Test-CA + prover CLI; end-to-end offline: mint → prove → verify. Unlinkability transcript check (§7.3). | "We can generate spec-conformant credentials/proofs ourselves." |
-| **M3 — EU interop** | Verify a proof produced by the EU AV app's demo build (Android, driven via baremobile/emulator). | "The EU app's proofs are format-compatible with upstream longfellow." **Fallback if brittle:** interop vs. longfellow's reference prover; EU-app interop documented as pending in the dossier. |
+| **M3 — EU interop** | Verify a proof produced by the EU AV app (Android, driven via baremobile/emulator). **Revised by the EU-stack audit (2026-07-14):** any flavor will do — ZK is carried in all of them — but the proof **must be captured over the browser DC API or proximity, never OpenID4VP**, which cannot emit one (`EU-STACK-AUDIT.md` §2). Differential-test the same proofs against `av-dc-api-backend` (vendored Multipaz, deployed and live) as an independent oracle. | "The EU app's proofs are format-compatible with upstream longfellow." **Fallback if brittle:** differential test vs. `av-dc-api-backend` and/or longfellow's reference prover; real-app interop documented as pending in the dossier. |
 | **M4 — the gate** | Endpoint + middleware + demo site. All AGENT_RULES invariants apply (rate-limiting, unhappy paths, no `0.0.0.0`). Probe-style check: middleware consumes only the verify module's public surface. **Owns "is this presentation still good *right now*"** — both halves: (a) per-session nonce, single-use; (b) **credential validity window — an expired credential must not verify** (see §7.4). | "A mid-size site can adopt this without thinking." |
 | **M5 — dossier** | The refutation page with the live demo embedded. | "The argument survives being written down with citations." |
 
@@ -231,7 +263,7 @@ verifier — and never "you are underage."
 | # | Decision |
 |---|---|
 | D1 | **The custody line is "never stores anything."** A hosted demo instance is permitted if and only if it stores nothing — no logs of proofs, no accounts, no telemetry; transient rate-limit state only. |
-| D2 | **Android emulator is available** for M3 (EU app demo build, driven via baremobile). Fallback if interop proves brittle: longfellow's reference prover, EU-app interop marked pending in the dossier. |
+| D2 | **Android emulator is available** for M3 (EU app, any flavor — ZK is in all of them — driven via baremobile). **Amended 2026-07-14:** the proof must be captured over the DC API or proximity, *not* OpenID4VP. Fallback if interop proves brittle: differential test against `av-dc-api-backend` (live) and/or longfellow's reference prover, real-app interop marked pending in the dossier. |
 | D3 | **Public GitHub from day one, Apache-2.0** (see §10). |
 | D4 | **Stack is vanilla Node** — owner preference for simplicity/speed/vanilla, confirmed viable since the C++ core is subprocess-driven either way. |
 | D5 | **Success = trust discrimination** (§7.1, owner's wording: "works on own cert and not others"). |

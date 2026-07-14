@@ -21,13 +21,21 @@
 
 **Stateless, one-bit, unlinkable age verification. Proof in → `true/false` out — no name, no birthdate, no document, no identifier, nothing stored.**
 
-Small enough to understand completely, boring enough to run forever. 8een checks a zero-knowledge age proof against an issuer trust list and answers exactly one bit. Proofs are fresh per presentation and mathematically unlinkable — two sites comparing notes see two strangers. There is nothing to breach, subpoena, or sell, because identity never arrives. The cryptography is never ours: proofs are generated and verified by [google/longfellow-zk](https://github.com/google/longfellow-zk) (Apache-2.0, IETF [draft-google-cfrg-libzk](https://datatracker.ietf.org/doc/draft-google-cfrg-libzk/)) — the same scheme the EU age-verification blueprint designates and the EU app's demo build already produces. 8een is the missing half: the verifier, the trust-anchor handling, the tests, the drop-in gate, and the documentation that make it adoptable.
+Small enough to understand completely, boring enough to run forever. 8een checks a zero-knowledge age proof against an issuer trust list and answers exactly one bit. Proofs are fresh per presentation and mathematically unlinkable — two sites comparing notes see two strangers. There is nothing to breach, subpoena, or sell, because identity never arrives. The cryptography is never ours: proofs are generated and verified by [google/longfellow-zk](https://github.com/google/longfellow-zk) (Apache-2.0, IETF [draft-google-cfrg-libzk](https://datatracker.ietf.org/doc/draft-google-cfrg-libzk/)) — the same scheme the EU age-verification blueprint designates and the EU app already carries in every build. 8een is the missing half: the verifier, the trust-anchor handling, the tests, the drop-in gate, and the documentation that make it adoptable.
 
 ## Why
 
-eIDAS 2.0 Art. 5a(16) mandates unlinkability as an *outcome*. The EU age-verification blueprint concedes zero-knowledge proofs are the *mechanism* — then marks them optional, ships them only in a demo build, and fields an official verifier stack that cannot consume them. The production fallback (batches of 30 single-use credentials) is rate-limited linkability, not unlinkability.
+eIDAS 2.0 Art. 5a(16)(a) says the framework must not let attestation providers *or any other party* obtain data that allows transactions to be "tracked, linked or correlated." It names the **issuer** as an adversary.
+
+The EU blueprint's default answer is batch-issued single-use credentials. Against colluding websites those genuinely work — each is bound to its own device key, so two sites comparing notes really do see two strangers. But they do not defend against the issuer, who signs every credential and could recognise it; the spec's only safeguard is that it *"does not require"* the issuer to retain anything — a policy, not a cryptographic guarantee. The blueprint's own Annex B concedes that zero-knowledge proofs are what *"ensur[e] unlinkability."*
+
+ZK is where the blueprint stops short. It is `SHOULD`, not `SHALL`, and it sits in the chapter titled **"Experimental features"** — so the mandatory path remains full disclosure, where the relying party sees the actual credential. And where ZK *is* implemented, the path is broken end-to-end on the protocol the web actually uses: the EU wallet never receives the ZK machinery on its OpenID4VP path, so it cannot produce a proof there, and the flagship OpenID4VP verifier contains no ZK code at all and cannot check one. When proof generation does fail, the wallet's default policy is `FallbackToFullDisclosure` — it silently hands over the whole document instead.
+
+A working ZK verifier does exist: one server-side component, a vendored copy of OpenWallet's Multipaz, deployed and live. It is a wallet SDK, not something a mid-size site drops into a request path.
 
 8een exists to make the unlinkable version so cheap to adopt that shipping the linkable one becomes the expensive, embarrassing, indefensible option. Not a campaign against the lock — a component that removes its premise.
+
+Every claim above is pinned to a file, a line, and a commit in [`docs/02-evidence/EU-STACK-AUDIT.md`](docs/02-evidence/EU-STACK-AUDIT.md) — including four earlier claims of ours that the audit **retracted**.
 
 ## Quick start (honest M1 edition)
 
@@ -100,7 +108,7 @@ Since **M2** the integration suite mints its own credentials at run time via `to
 Three actors; 8een is only the third:
 
 1. **Issuer** (government/bank) — signs a credential (ISO mdoc with a birthdate) onto the holder's phone, once. *Exists; never ours.*
-2. **Holder** (wallet on the phone) — per visit, generates a fresh ZK proof: *"a validly-signed credential behind this proof clears the threshold"*, bound to the site's fresh nonce. The credential never leaves the phone; no two proofs are matchable. *Exists (EU app demo build).*
+2. **Holder** (wallet on the phone) — per visit, generates a fresh ZK proof: *"a validly-signed credential behind this proof clears the threshold"*, bound to the site's fresh nonce. The credential never leaves the phone; no two proofs are matchable. *Exists in every EU app build — but only over the browser DC API or proximity, never over OpenID4VP.*
 3. **Verifier** (8een) — proof + issuer trust anchor + nonce in, one bit out, amnesia after.
 
 The visitor sees: one button → wallet prompt showing exactly what's disclosed ("over 18: yes/no") → one tap → in. The threshold (15/16/18/21) is the site's *question*, never the visitor's *answer* — the API physically cannot return an age.
