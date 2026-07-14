@@ -21,3 +21,6 @@ node_modules/
 
 # generated types — built on publish, never committed (LIBRARY_CONVENTIONS §2)
 /types/
+
+# Compiled Go spike binary (build artifact, not source)
+/poc/m2-spike/m2spike

@@ -1,0 +1,415 @@
+//go:build cgo
+
+package main
+
+// fixture.go — closes the loop from the raw run_mdoc_prover proof to the ACTUAL
+// longfellow verifier SERVICE wire format ({Transcript, ZKDeviceResponseCBOR}
+// JSON) with a real x509 issuer cert chain.
+//
+// The service (reference/verifier-service/server) does MORE than the raw prover:
+// it decodes the ZKDeviceResponseCBOR, parses the MsoX5chain into x509 certs,
+// requires the signer cert be ECDSA P-256, and VERIFIES THE CHAIN against the
+// -cacerts PEM before extracting (pkx,pky) from the signer cert and calling
+// run_mdoc_verifier. So the trust boundary IS the PEM. This generator produces,
+// per scenario, a fixture JSON, and records which CA (if any) is trusted.
+//
+// The OUTER wire structs below are marshalled with fxamacker/cbor (a library),
+// which is correct here and the exact opposite of the inner mdoc byte layout in
+// mint.go: fxamacker encodes a Go struct as a CBOR map keyed by field NAME, and
+// the service unmarshals by case-insensitive field name, so order is irrelevant
+// and no canonical/CTAP2 mode is wanted. The structs mirror
+// reference/verifier-service/server/zk/cbor.go.
+
+import (
+	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/fxamacker/cbor/v2"
+)
+
+// ---- service wire structs, replicated from reference/.../zk/cbor.go ----
+
+type zkSignedItem struct {
+	ElementIdentifier string
+	ElementValue      cbor.RawMessage
+}
+
+type zkDocumentDataIso struct {
+	DocType      string
+	ZkSystemId   string
+	IssuerSigned map[string][]zkSignedItem
+	MsoX5chain   any
+	Timestamp    string
+}
+
+type zkDocumentIso struct {
+	DocumentData []byte
+	Proof        []byte
+}
+
+type zkDeviceResponseIso struct {
+	Version     string
+	ZKDocuments []zkDocumentIso
+	Status      uint
+}
+
+// serial hands out unique-enough cert serial numbers. The CSPRNG error is
+// propagated, not dropped: a nil SerialNumber would surface later as an opaque
+// x509 error, and a key-minting tool must never let a failed rand read pass
+// quietly.
+func serial() (*big.Int, error) {
+	n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("serial number: %w", err)
+	}
+	return n, nil
+}
+
+// certWindow is deliberately relative to the REAL wall clock: now-1yr .. now+1yr.
+// This is the whole point: the fixtures are natively valid on the real clock, so
+// the JS integration suite can drop ZKVERIFY_FAKE_TIME (the M0/M1 scaffolding
+// that pinned x509 verification time to keep the stale upstream fixture's chain
+// valid). This x509 clock is entirely separate from the circuit's `nowStr` clock.
+//
+// It is computed ONCE per scenario and threaded into the CA, the leaf, and the log
+// line, so all three describe the same window — calling time.Now() separately per
+// certificate would print a window that belongs to no certificate we actually
+// issued.
+func certWindow() (time.Time, time.Time) {
+	now := time.Now()
+	return now.AddDate(-1, 0, 0), now.AddDate(1, 0, 0)
+}
+
+// makeCA mints a self-signed P-256 CA (IsCA), as the service's generateTestCA does.
+func makeCA(org string, nb, na time.Time) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	sn, err := serial()
+	if err != nil {
+		return nil, nil, err
+	}
+	tmpl := x509.Certificate{
+		SerialNumber:          sn,
+		Subject:               pkix.Name{Organization: []string{org}, CommonName: org},
+		NotBefore:             nb,
+		NotAfter:              na,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		return nil, nil, err
+	}
+	cert, err := x509.ParseCertificate(der)
+	return cert, priv, err
+}
+
+// makeLeaf mints a document-signer (leaf) cert whose SUBJECT PUBLIC KEY is the
+// issuer MSO-signing key (subjectPub), signed by the CA. This is the load-bearing
+// wiring: validateIssuerKey (reference/.../zk/cbor.go:260) extracts (pkx,pky) from
+// THIS cert and hands it to run_mdoc_verifier, and the proof only verifies under
+// the key that signed the MSO issuerAuth. Get it wrong and you get Status:false
+// with a VALID chain — indistinguishable at a glance from a bad proof.
+//
+// assertFixtureVerifies is what stops that being a silent failure: the equality
+// asserted in this comment is checked, not assumed.
+func makeLeaf(ca *x509.Certificate, caKey *ecdsa.PrivateKey, subjectPub *ecdsa.PublicKey, nb, na time.Time) (*x509.Certificate, error) {
+	sn, err := serial()
+	if err != nil {
+		return nil, err
+	}
+	tmpl := x509.Certificate{
+		SerialNumber: sn,
+		Subject:      pkix.Name{Organization: []string{"8een M2 Document Signer"}, CommonName: "8een-test-ds"},
+		NotBefore:    nb,
+		NotAfter:     na,
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, ca, subjectPub, caKey)
+	if err != nil {
+		return nil, err
+	}
+	return x509.ParseCertificate(der)
+}
+
+// packageFixture builds the {Transcript, ZKDeviceResponseCBOR} JSON the service
+// consumes. wireValue is the CBOR the holder CLAIMS for age_over_18 in the wire
+// envelope (normally identical to the proven value; a mismatch is how a lying
+// echo / tamper scenario is expressed).
+func packageFixture(m *MintResult, proof []byte, leaf, ca *x509.Certificate, wireValue []byte) ([]byte, error) {
+	// x5chain as a single CBOR byte string = leaf DER || CA DER. getFirstCert's
+	// []byte branch (reference/.../zk/cbor.go:127) returns the whole run and
+	// validateIssuerKey's x509.ParseCertificates (cbor.go:262) parses BOTH into
+	// [leaf, CA]; an [][]byte array would drop everything past element 0, dropping
+	// the CA and with it the chain.
+	x5 := append(append([]byte{}, leaf.Raw...), ca.Raw...)
+
+	dd := zkDocumentDataIso{
+		DocType:    m.DocType,
+		ZkSystemId: circuitHash0,
+		IssuerSigned: map[string][]zkSignedItem{
+			namespace: {{
+				ElementIdentifier: elemID,
+				ElementValue:      cbor.RawMessage(append([]byte{}, wireValue...)),
+			}},
+		},
+		MsoX5chain: x5,
+		Timestamp:  nowStr,
+	}
+	ddBytes, err := cbor.Marshal(dd)
+	if err != nil {
+		return nil, fmt.Errorf("marshal DocumentData: %w", err)
+	}
+	resp := zkDeviceResponseIso{
+		Version:     "1.0",
+		ZKDocuments: []zkDocumentIso{{DocumentData: ddBytes, Proof: proof}},
+		Status:      0,
+	}
+	respBytes, err := cbor.Marshal(resp)
+	if err != nil {
+		return nil, fmt.Errorf("marshal DeviceResponse: %w", err)
+	}
+	out := map[string]string{
+		"Transcript":           base64.StdEncoding.EncodeToString(m.Transcript),
+		"ZKDeviceResponseCBOR": base64.StdEncoding.EncodeToString(respBytes),
+	}
+	return json.MarshalIndent(out, "", "  ")
+}
+
+// expectation is what run_mdoc_verifier MUST do with a scenario's proof. It is
+// asserted before the fixture is written, never assumed.
+//
+// Note this is the ZK verdict only. untrusted-issuer carries a perfectly VALID
+// proof — it is meant to be refused earlier, at chain validation, because its CA
+// is withheld from the trust PEM. Conflating "this fixture should be rejected" with
+// "this proof should fail to verify" is exactly the ok/over_threshold collapse
+// CLAUDE.md forbids, so the two are kept apart here too.
+type expectation int
+
+const (
+	expectAccept expectation = iota // run_mdoc_verifier must return SUCCESS
+	expectReject                    // run_mdoc_verifier must NOT return SUCCESS
+)
+
+// assertFixtureVerifies refuses to emit a fixture that does not do what its
+// scenario claims.
+//
+// This project's recurring bug is a security-critical resource that silently
+// half-loads, leaving the verifier confidently rejecting valid proofs. A fixture
+// generator that never checks its own output is that same bug one layer up:
+// mkfixture would report success, the JS suite would go red, and the VERIFIER would
+// take the blame for a generator defect. So both of the invariants that the code
+// above merely asserts in prose get checked here:
+//
+//  1. The leaf cert carries the exact key the MSO was signed with. If it does not,
+//     the chain still validates and the service still extracts a (pkx,pky) — just
+//     the wrong one — and every proof fails while looking like bad crypto.
+//  2. longfellow actually reaches the expected verdict on these exact bytes. In
+//     particular a "tampered" fixture whose byte-flip landed somewhere inert would
+//     otherwise ship as a negative test that silently passes.
+func assertFixtureVerifies(circuit []byte, m *MintResult, proof []byte, leaf *x509.Certificate, requested []byte, want expectation) error {
+	leafPub, ok := leaf.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("leaf public key is %T, want *ecdsa.PublicKey", leaf.PublicKey)
+	}
+	if !leafPub.Equal(&m.IssuerKey.PublicKey) {
+		return fmt.Errorf(
+			"leaf cert does not carry the MSO-signing key: the chain would validate, " +
+				"the service would extract the WRONG (pkx,pky), and every proof would fail with a valid chain")
+	}
+
+	vName, vCode := RunVerifier(circuit, m, proof, requested)
+	switch want {
+	case expectAccept:
+		if vCode != 0 {
+			return fmt.Errorf("proof must verify, but longfellow rejected it: %s", vName)
+		}
+	case expectReject:
+		if vCode == 0 {
+			return fmt.Errorf("proof must NOT verify, but longfellow ACCEPTED it — this negative fixture would silently pass")
+		}
+	}
+	return nil
+}
+
+// scenario mints a credential with a given age_over_18 value, produces a real
+// proof (requesting that same value), wraps it in a fresh CA+leaf chain,
+// optionally tampers the proof, and then VERIFIES the result against `want` before
+// handing it back. Returns the fixture JSON and the CA DER (for the trust PEM).
+// credValue is both the minted elementValue AND the requested attribute value;
+// wireValue is only what the wire envelope claims.
+func scenario(circuit []byte, name string, credValue, wireValue []byte, tamper bool, want expectation) (fixture, caDER []byte, err error) {
+	m, err := Mint(credValue)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: mint: %w", name, err)
+	}
+	proof, pName, pCode := RunProver(circuit, m, credValue)
+	if pCode != 0 {
+		return nil, nil, fmt.Errorf("%s: prover failed: %s", name, pName)
+	}
+
+	if tamper {
+		// Flip one byte deep in the proof body (avoid the very start/end framing).
+		// assertFixtureVerifies below is what guarantees the flip actually broke the
+		// proof rather than landing on an inert byte.
+		i := len(proof) / 2
+		proof[i] ^= 0xFF
+	}
+
+	// One window, shared by the CA, the leaf, and the log line below, so all three
+	// describe the same validity period.
+	nb, na := certWindow()
+	ca, caKey, err := makeCA("8een M2 Test Issuer CA", nb, na)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: CA: %w", name, err)
+	}
+	leaf, err := makeLeaf(ca, caKey, &m.IssuerKey.PublicKey, nb, na)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: leaf: %w", name, err)
+	}
+
+	if err := assertFixtureVerifies(circuit, m, proof, leaf, credValue, want); err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", name, err)
+	}
+
+	fixture, err = packageFixture(m, proof, leaf, ca, wireValue)
+	if err != nil {
+		return nil, nil, err
+	}
+	verdict := "verifies"
+	if want == expectReject {
+		verdict = "correctly refused"
+	}
+	fmt.Printf("  [%s] proof=%dB  DS-key=%s...  cert %s..%s  ZK: %s\n",
+		name, len(proof), m.IssuerPkX[:18], nb.Format("2006-01-02"), na.Format("2006-01-02"), verdict)
+	return fixture, ca.Raw, nil
+}
+
+// GenFixtures writes the four-scenario fixture set + trust PEM into outDir. The
+// circuit is read from circuitDir/<circuitHash0>.
+func GenFixtures(circuitDir, outDir string) error {
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return err
+	}
+	circuitPath := filepath.Join(circuitDir, circuitHash0)
+	circuit, err := os.ReadFile(circuitPath)
+	if err != nil {
+		return fmt.Errorf("read circuit %s: %w", circuitPath, err)
+	}
+
+	// Verify the circuit by its ID, never by its filename. The file is NAMED for its
+	// circuit id, but a name is not evidence: a truncated, corrupted or swapped file
+	// at that path would otherwise be loaded silently and every fixture generated
+	// against a circuit the verifier never uses. longfellow will not catch this for
+	// us — mdoc_zk.cc:112-113 disables its internal id enforcement and states that
+	// "the application is expected to check the ID once". We are the application.
+	gotID, err := CircuitID(circuit)
+	if err != nil {
+		return fmt.Errorf("circuit %s: %w", circuitPath, err)
+	}
+	if gotID != circuitHash0 {
+		return fmt.Errorf(
+			"circuit id mismatch: %s holds a circuit whose id is %s, not %s — refusing to generate fixtures against an unknown circuit",
+			circuitPath, gotID, circuitHash0)
+	}
+
+	fmt.Printf("generating fixtures into %s (real clock: %s)\n", outDir, time.Now().Format(time.RFC3339))
+	fmt.Printf("circuit id verified by longfellow's own circuit_id(): %s\n", gotID)
+
+	f5 := []byte{0xF5} // CBOR true  (age_over_18 = true)
+	f4 := []byte{0xF4} // CBOR false (age_over_18 = false)
+
+	var trusted [][]byte // CA DERs that go into the trust PEM
+
+	write := func(name string, fx []byte) error {
+		return os.WriteFile(filepath.Join(outDir, name+".json"), fx, 0o644)
+	}
+
+	// 1. valid — age_over_18=true, DS chains to a trusted CA. -> ACCEPT.
+	fx, caDER, err := scenario(circuit, "valid", f5, f5, false, expectAccept)
+	if err != nil {
+		return err
+	}
+	trusted = append(trusted, caDER)
+	if err := write("valid", fx); err != nil {
+		return err
+	}
+
+	// 2. untrusted-issuer — age_over_18=true, DS chains to a CA that is NOT in the
+	//    trust PEM (its caDER is deliberately dropped, not appended). The ZK proof
+	//    itself is perfectly VALID (hence expectAccept): the rejection must come
+	//    earlier, at chain validation (ISSUER_UNTRUSTED). If this proof failed to
+	//    verify we would be testing the wrong thing and would never learn whether
+	//    the trust boundary works.
+	fx, untrustedCA, err := scenario(circuit, "untrusted-issuer", f5, f5, false, expectAccept)
+	if err != nil {
+		return err
+	}
+	if err := write("untrusted-issuer", fx); err != nil {
+		return err
+	}
+
+	// 3. underage — age_over_18=FALSE, honestly proven, DS chains to a trusted CA.
+	//    The proof is VALID (Status:true) but the CLAIM is false: over-18 is
+	//    (Status==true AND claim==true), so this is NOT over-18. A consumer reading
+	//    Status alone would wrongly accept a validly-proven minor.
+	fx, caDER, err = scenario(circuit, "underage", f4, f4, false, expectAccept)
+	if err != nil {
+		return err
+	}
+	trusted = append(trusted, caDER)
+	if err := write("underage", fx); err != nil {
+		return err
+	}
+
+	// 4. tampered — valid over-18 credential, one proof byte flipped. DS chains to
+	//    a trusted CA (so rejection is the ZK math, not the chain). The wire still
+	//    CLAIMS age_over_18=true — the CLAUDE.md failure-mode #4 echo trap: the
+	//    service returns Status:false but Claims echoes true; when Status:false the
+	//    echo is unverified noise and must be discarded. -> ZK_PROOF_INVALID.
+	fx, caDER, err = scenario(circuit, "tampered", f5, f5, true, expectReject)
+	if err != nil {
+		return err
+	}
+	trusted = append(trusted, caDER)
+	if err := write("tampered", fx); err != nil {
+		return err
+	}
+
+	// Trust PEM: exactly the CAs of the fixtures that should chain (valid, underage,
+	// tampered). untrusted-issuer's CA must be ABSENT — that omission is the entire
+	// negative test, and it is the kind of thing a later edit silently undoes. Check
+	// it rather than trusting that we remembered.
+	for _, der := range trusted {
+		if bytes.Equal(der, untrustedCA) {
+			return fmt.Errorf(
+				"untrusted-issuer's CA leaked into the trust PEM — its fixture would be ACCEPTED and the trust-boundary test would silently pass")
+		}
+	}
+
+	var pemBuf []byte
+	for _, der := range trusted {
+		pemBuf = append(pemBuf, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	}
+	if err := os.WriteFile(filepath.Join(outDir, "caCerts.pem"), pemBuf, 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("wrote 4 fixtures + caCerts.pem (%d trusted CA certs; untrusted-issuer's CA withheld)\n", len(trusted))
+	return nil
+}

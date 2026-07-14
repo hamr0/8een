@@ -9,7 +9,10 @@ duty and is a hard M4 requirement). Precision note from M0: longfellow-zk ships 
 verifier *service* (Docker/cgo, US-DMV trust list) — so the claim is not "no
 verifier exists" but "no adoptable drop-in exists, and the EU's official
 stack still cannot consume ZK proofs." **M1 PASSED** (2026-07-13, v0.1.0 —
-[evidence](../02-evidence/M1-EVIDENCE.md)); M2 (test-CA + prover CLI) is next.
+[evidence](../02-evidence/M1-EVIDENCE.md)). **M2 IN PROGRESS** — the de-risking
+spike passed (2026-07-14: a self-minted credential is proved and verified by
+longfellow's own prover/verifier, with underage-forgery and wrong-issuer both
+refused; [evidence](../02-evidence/M2-EVIDENCE.md)); productionization owed.
 **Owner:** hamr0
 **Last updated:** 2026-07-12
 

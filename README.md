@@ -75,7 +75,7 @@ The vendored longfellow-zk clone and derived fixtures are gitignored by design; 
 |---|---|---|
 | **M0** | POC spike: build the core, verify a real proof, reject what must be rejected | **PASSED** — [evidence](poc/M0-EVIDENCE.md) |
 | **M1** | `verify` module: pure verdict, never-throw `{ok, over_threshold, reason}`, full negative matrix | **PASSED** — [evidence](docs/02-evidence/M1-EVIDENCE.md) |
-| **M2** | Full local loop: test-CA (keys generated at runtime, never in the tree), offline fixtures | planned |
+| **M2** | Full local loop: test-CA (keys generated at runtime, never in the tree), offline fixtures | **in progress** — spike passed ([evidence](docs/02-evidence/M2-EVIDENCE.md)) |
 | **M3** | Interop with the EU AV app's demo-build proofs | planned |
 | **M4** | HTTP gate + drop-in middleware + demo site (per-session nonce, single-use) | planned |
 | **M5** | The dossier: statute → spec → shipped default → working demo | planned |

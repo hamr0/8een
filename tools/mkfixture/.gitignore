@@ -1,0 +1,5 @@
+# Built binary — regenerate with `CGO_ENABLED=1 go build -o mkfixture .`
+/mkfixture
+
+# Generated fixture output (default -out); never commit generated fixtures/keys
+/fixtures/
