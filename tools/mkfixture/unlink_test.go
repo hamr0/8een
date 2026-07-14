@@ -60,32 +60,67 @@ func documentDataAndProof(t *testing.T, path string) (documentData, proof []byte
 	return resp.ZKDocuments[0].DocumentData, resp.ZKDocuments[0].Proof
 }
 
-// sharedKGrams counts the DISTINCT k-byte sequences that occur in both a and b.
-//
-// This is the detector for a stable per-credential identifier hiding in the proof
-// bytes. If two presentations of one credential embedded a common value of k bytes
-// or more -- a credential id, a device-key-derived tag, an unrandomised commitment
-// -- they would share k-grams that presentations of DIFFERENT credentials do not.
-// Comparing same-credential overlap against different-credential overlap is what
-// turns that into a falsifiable statement, and it needs no knowledge of longfellow's
-// internals: it reads the proof as an opaque blob, which is precisely what a
-// colluding pair of verifiers would do.
-func sharedKGrams(a, b []byte, k int) int {
-	if len(a) < k || len(b) < k {
-		return 0
+// shareRunOfLength reports whether a and b share any contiguous run of exactly k
+// bytes.
+func shareRunOfLength(a, b []byte, k int) bool {
+	if k <= 0 || len(a) < k || len(b) < k {
+		return false
 	}
 	seen := make(map[string]struct{}, len(a))
 	for i := 0; i+k <= len(a); i++ {
 		seen[string(a[i:i+k])] = struct{}{}
 	}
-	shared := make(map[string]struct{})
 	for i := 0; i+k <= len(b); i++ {
-		g := string(b[i : i+k])
-		if _, ok := seen[g]; ok {
-			shared[g] = struct{}{}
+		if _, ok := seen[string(b[i:i+k])]; ok {
+			return true
 		}
 	}
-	return len(shared)
+	return false
+}
+
+// longestCommonRun returns the length of the longest contiguous byte run present in
+// BOTH a and b.
+//
+// This is the detector for a stable per-credential identifier hiding in the proof
+// bytes: any value of L bytes shared by two presentations forces the longest common
+// run to at least L. It reads the proof as an opaque blob — exactly what a colluding
+// pair of verifiers would do — and needs no knowledge of longfellow's internals.
+//
+// It replaces a "count shared 8-grams, allow a margin of 8" metric that a review
+// showed was blind by construction: an identifier of L bytes contributes only L-7
+// distinct 8-grams, so anything under 16 bytes — an 8-byte credential serial, say,
+// the very thing the test hunts — fell under the margin and was invisible. A longest
+// common RUN has no such floor: an 8-byte identifier moves it to 8, full stop.
+//
+// Binary search on length; the run-length property is monotone (if a run of length k
+// is shared, so is every shorter one, since every k-run contains a (k-1)-run).
+//
+// The search is capped at maxRunProbe. That is not a fudge: it bounds memory (the
+// probe holds a map of ~360k keys, so an uncapped search would first try a run of
+// ~180 KB and allocate tens of gigabytes — it OOM-killed the test run that found
+// this), and any shared run even approaching the cap is already a catastrophic
+// finding. A capped result is reported as ">= maxRunProbe" by the caller, never
+// silently clamped into a pass.
+const maxRunProbe = 64
+
+func longestCommonRun(a, b []byte) int {
+	hi := maxRunProbe
+	if len(a) < hi {
+		hi = len(a)
+	}
+	if len(b) < hi {
+		hi = len(b)
+	}
+	lo := 0
+	for lo < hi {
+		mid := (lo + hi + 1) / 2
+		if shareRunOfLength(a, b, mid) {
+			lo = mid
+		} else {
+			hi = mid - 1
+		}
+	}
+	return lo
 }
 
 // TestProofBytesCarryNoPerCredentialIdentifier is the black-box unlinkability check
@@ -104,6 +139,46 @@ func sharedKGrams(a, b []byte, k int) int {
 // size. The self-comparison is the harness control: it proves the detector can see
 // an identifier when one is there, so a null result means "no identifier found"
 // rather than "the test is broken".
+// linkable is THE predicate, factored out so the positive control below runs the
+// exact same decision the real assertion runs — not a paraphrase of it.
+//
+// A pair is linkable if the run it shares exceeds the BASELINE — what two DIFFERENT
+// credentials from the same issuer already share — by more than measurement noise.
+// Using the different-credential pair as the baseline is what makes this meaningful:
+// it subtracts off whatever the proofs have in common structurally, leaving only what
+// is specific to the credential.
+func linkable(sameRun, diffRun, floor int) bool {
+	baseline := diffRun
+	if floor > baseline {
+		baseline = floor
+	}
+	return sameRun > baseline+noiseMargin
+}
+
+// structuralFloor is the longest run ANY two of these proofs share, identifier or
+// not: encoding constants, framing, padding. MEASURED at 8 bytes — for both the
+// same-credential and the different-credential pair — which is well above the ~5 B a
+// pair of truly random 360 KB blobs would collide on, so it is structure, not chance.
+//
+// noiseMargin keeps a one-off ±1 wobble in that background from being read as an
+// identifier and making the suite flaky.
+const (
+	structuralFloor = 8
+	noiseMargin     = 2
+)
+
+// DETECTION FLOOR, stated plainly rather than buried: this method detects a
+// contiguous per-credential identifier of about 11 bytes or more (baseline 8 + margin
+// 2, exceeded). It CANNOT detect one of 8 bytes or fewer — an 8-byte credential
+// serial sits inside the structural background and is invisible to it. That is not a
+// hypothetical: the positive control below was originally written with an 8-byte tag,
+// and it correctly REFUSED to pass, which is how the floor was discovered rather than
+// assumed. Nor can it detect an identifier that is encrypted, split, or spread across
+// non-contiguous bytes. What it rules out is a naive, contiguous one of >= 11 bytes —
+// which is the shape a leaked serial, UUID, device-key hash or unrandomised commitment
+// would actually take. Full cryptographic unlinkability remains cited, not claimed
+// (PRD §7.3).
+
 func TestProofBytesCarryNoPerCredentialIdentifier(t *testing.T) {
 	circuit := loadCircuit(t)
 
@@ -121,32 +196,54 @@ func TestProofBytesCarryNoPerCredentialIdentifier(t *testing.T) {
 	_, proofA2 := documentDataAndProof(t, filepath.Join(dir, "unlinkable-a2.json"))
 	_, proofB1 := documentDataAndProof(t, filepath.Join(dir, "unlinkable-b1.json"))
 
-	const k = 8 // 8 bytes: far beyond what random 360 KB blobs collide on by chance
+	sameRun := longestCommonRun(proofA1, proofA2) // SAME credential, two sessions
+	diffRun := longestCommonRun(proofA1, proofB1) // DIFFERENT credentials, same issuer
 
-	self := sharedKGrams(proofA1, proofA1, k) // control: the detector working
-	same := sharedKGrams(proofA1, proofA2, k) // SAME credential, two sessions
-	diff := sharedKGrams(proofA1, proofB1, k) // DIFFERENT credentials, same issuer
+	t.Logf("longest common run — same-credential:%dB  different-credential:%dB  (structural floor %dB, margin %dB)",
+		sameRun, diffRun, structuralFloor, noiseMargin)
 
-	t.Logf("shared distinct %d-grams -- self:%d  same-credential:%d  different-credential:%d", k, self, same, diff)
-
-	// HARNESS CONTROL. If this fails, every number above is meaningless and the
-	// null result below would be an artifact rather than a finding.
-	if self < 1000 {
-		t.Fatalf("the detector cannot even find a proof inside itself (self=%d) -- the harness is broken, not the crypto", self)
+	// The measured background must not have drifted out from under the floor above; if
+	// it has, the threshold is stale and the null result cannot be trusted.
+	if diffRun > structuralFloor+noiseMargin {
+		t.Fatalf("different-credential baseline is %dB, above the declared structural floor of %dB — "+
+			"the threshold this test reasons against is stale; re-measure it, do not widen it to make this pass", diffRun, structuralFloor)
 	}
 
-	// THE ASSERTION. Two presentations of the SAME credential must not share
-	// materially more than two presentations of DIFFERENT credentials do. Whatever
-	// baseline overlap exists (structural constants, encoding padding) is shared by
-	// both pairs; an IDENTIFIER would show up only in `same`.
+	// POSITIVE CONTROL — the guard, watched firing.
 	//
-	// The margin is deliberately tight: an identifier worth having is at least a few
-	// bytes, and at k=8 even a single 16-byte tag would contribute ~9 distinct grams.
-	const margin = 8
-	if same > diff+margin {
-		t.Fatalf("two presentations of the SAME credential share %d distinct %d-grams, but two DIFFERENT credentials "+
-			"share only %d -- the excess is a stable per-credential identifier in the proof bytes, and the presentations are LINKABLE",
-			same, k, diff)
+	// The previous version used sharedKGrams(proofA1, proofA1) as its "control": a blob
+	// compared with itself. It could never fail, never once exercised cross-blob
+	// detection, and certified a detector nobody had watched detect anything. A review
+	// caught it. It is the same mistake this repo keeps finding — a guard you have not
+	// watched FIRE is not a guard — committed inside the very test written to enforce it.
+	//
+	// So: plant a known identifier from a1 into a copy of b1 and require the REAL
+	// predicate to flag it. This is what fixes the detection floor honestly: written
+	// first with an 8-byte tag, it FAILED — the background is already 8 B — which is
+	// how we learned an 8-byte identifier is invisible to this method, rather than
+	// assuming it wasn't.
+	const tagLen = 16 // a serial / UUID / key-hash — comfortably above the 8B background
+	planted := append([]byte(nil), proofB1...)
+	copy(planted[5000:], proofA1[1234:1234+tagLen])
+
+	plantedRun := longestCommonRun(proofA1, planted)
+	if plantedRun < tagLen {
+		t.Fatalf("planted a %dB identifier and the detector only found a %dB run — it cannot see what it is looking for",
+			tagLen, plantedRun)
+	}
+	if !linkable(plantedRun, diffRun, structuralFloor) {
+		t.Fatalf("planted a %dB per-credential identifier (run=%dB, baseline=%dB) and the predicate did NOT call it linkable — "+
+			"this test cannot fail, and the null result below would be worthless",
+			tagLen, plantedRun, diffRun)
+	}
+	t.Logf("positive control: planted %dB identifier -> run %dB -> correctly flagged LINKABLE", tagLen, plantedRun)
+
+	// THE ASSERTION. The detector has just been watched catching a planted identifier,
+	// so a null result here is a finding rather than an artifact.
+	if linkable(sameRun, diffRun, structuralFloor) {
+		t.Fatalf("two presentations of the SAME credential share a %dB run, while two DIFFERENT credentials share only %dB — "+
+			"the excess is a stable per-credential identifier in the proof bytes, and the presentations are LINKABLE",
+			sameRun, diffRun)
 	}
 }
 

@@ -6,8 +6,8 @@
 This log opens with the de-risking spike that settled the riskiest assumption, and
 closes with the milestone met: the integration suite mints its own credentials,
 runs the full §7.1 negative matrix and the §7.3 unlinkability check, and does it all
-on the real clock — **18/18, 0 skipped**. The `ZKVERIFY_FAKE_TIME` scaffolding that
-M0 and M1 leaned on is gone from the tree.
+on the real clock — **19/19, 0 skipped**. The `ZKVERIFY_FAKE_TIME` scaffolding that
+M0 and M1 leaned on is no longer used by anything.
 
 **Exit criterion (PRD §6):** *"We can generate spec-conformant
 credentials/proofs ourselves."* — **met.**
@@ -106,7 +106,7 @@ Observed on one full run against the real static lib:
 | `substituted-claim` | credential proves `age_over_18=**false**`; the wire envelope claims **true** | 360,596 B | **REFUSED** — `MDOC_VERIFIER_GENERAL_FAILURE` (code 5). The service verifies against the *envelope's* value, so the circuit is asked to prove `false == true` |
 | `unlinkable-a1/a2/b1` | `age_over_18=true` ×3, one issuer, one DS cert | ~360 KB each | **SUCCESS** ×3 — a1/a2 are one credential presented twice; b1 is a *different* credential from the same issuer |
 
-Whole run: **16.2 s** for all nine fixtures including their self-verification —
+Whole run: **~18 s** for all ten fixtures including their self-verification —
 against an integration suite whose circuit loads dominate at 45–70 s *per server*.
 Cheap enough that the suite mints fresh fixtures on every run and commits none.
 
@@ -239,38 +239,55 @@ Both were change detectors dressed as evidence. They are kept, correctly labelle
 because a later edit that widens the envelope or puts per-presentation data in a
 verdict *would* trip them — but they prove nothing about unlinkability.
 
-**The real check** (`TestProofBytesCarryNoPerCredentialIdentifier`) probes the only
-thing that genuinely varies per presentation: **the proof bytes**. If longfellow
-leaked a stable per-credential value, two presentations of the *same* credential
-would share byte-runs that two *different* credentials do not. Measured, distinct
-shared 8-grams:
+**SECOND RETRACTION — the replacement was wrong too, and this is the honest record.**
+The first replacement counted *shared distinct 8-grams* and allowed a margin of 8. A
+second review showed it was still blind by construction: an identifier of L bytes
+contributes only L−7 distinct 8-grams, so anything shorter than 16 bytes fell under
+the margin — **including an 8-byte credential serial, the exact thing the test named
+as its target.** Its "harness control" was `sharedKGrams(proofA1, proofA1)` — a blob
+compared with *itself*. It could not fail, and it never once exercised cross-blob
+detection. It certified a detector nobody had watched detect anything.
 
-| comparison | shared 8-grams |
+**The check that actually works** measures the **longest contiguous byte run** shared
+by two proofs. An identifier of L bytes forces that run to at least L — there is no
+margin to hide under. And it carries a **positive control**: a known identifier is
+*planted* from a1 into a copy of b1, and the real predicate must flag it. Measured:
+
+| comparison | longest common run |
 |---|---|
-| a1 vs **itself** (harness control) | **360,013** — the detector works |
-| a1 vs a2 — **same** credential, two sessions | **1** |
-| a1 vs b1 — **different** credentials, same issuer | **1** |
+| a1 vs a2 — **same** credential, two sessions | **8 B** |
+| a1 vs b1 — **different** credentials, same issuer | **8 B** |
+| **positive control** — 16 B identifier planted into b1 | **16 B → correctly flagged LINKABLE** |
 
-Same-credential overlap is identical to different-credential overlap, and both sit at
-background. **No per-credential identifier is detectable in the proof bytes.** The
-self-comparison is what makes that a finding rather than an artifact: it proves the
-detector can see an identifier when one is there, so the null result means "none
-found," not "the test is broken." Had a 16-byte tag been embedded, it would have
-contributed ~9 excess grams and the test would be red.
+Same-credential and different-credential runs are **identical** — 8 B of shared
+structure (encoding constants and framing, well above the ~5 B two random 360 KB blobs
+would collide on). There is no excess. **No per-credential identifier is detectable in
+the proof bytes**, and the control proves that is a finding rather than a broken
+detector.
+
+**DETECTION FLOOR, stated rather than buried: ~11 bytes.** The control was *first
+written with an 8-byte tag and it failed* — the structural background is already 8 B,
+so an 8-byte identifier is invisible to this method. That is how the floor was
+discovered instead of assumed, and it is a real limit: **an 8-byte serial would not be
+caught.** Nor would one that is encrypted, split, or non-contiguous. What is ruled out
+is a naive contiguous identifier of ≥11 bytes — the shape a leaked serial, UUID,
+device-key hash or unrandomised commitment actually takes.
 
 The check lives in Go because reading a proof back means decoding CBOR, and 8een
 parses no CBOR and will not grow a parser to test itself (NO-GO #8).
 
-**Still not claimed:** full cryptographic unlinkability. A byte-overlap probe finds a
-naive identifier; it cannot rule out a subtle or encrypted one. PRD §7.3 scopes that
-as *cited, not claimed* — it rests on the scheme's own security analysis, not on any
-test we wrote. That line has not moved.
+**Still not claimed:** full cryptographic unlinkability. PRD §7.3 scopes that as
+*cited, not claimed* — it rests on the scheme's own security analysis, not on any test
+we wrote. That line has not moved.
 
-**The lesson, which is the same one this project keeps relearning.** Both retracted
-checks passed on the first run and looked like evidence. What made them worthless was
-never visible in their output — only in asking *what input would make this go red?*
-For the strongest claim in the milestone, the answer was "none." A test authored to
-contain the phenomenon it tests can only confirm it.
+**The lesson, learned twice in one milestone.** Three versions of this check were
+written. The first two passed on their first run and looked exactly like evidence;
+both were worthless, and neither failure was visible in the output. It only shows up
+when you ask *what input would turn this red?* — and for the strongest claim in the
+milestone, the answer was "none," twice. The third version was made to answer that
+question by construction: it plants the thing it is hunting and refuses to pass unless
+it catches it. **A guard you have not watched fire is not a guard** — including, it
+turns out, the guard you wrote to enforce that rule.
 
 ## Honesty notes
 

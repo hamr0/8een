@@ -524,10 +524,36 @@ func GenFixtures(circuitDir, outDir string) error {
 	f5 := []byte{0xF5} // CBOR true  (age_over_18 = true)
 	f4 := []byte{0xF4} // CBOR false (age_over_18 = false)
 
+	// Clear any fixture from a previous run BEFORE writing this one's.
+	//
+	// Every run mints fresh CAs and rewrites caCerts.pem, so a fixture left over from
+	// an earlier (or partially failed) run is keyed to a CA that is no longer in the
+	// trust PEM. Run it and it fails at chain validation — for a reason that has
+	// nothing to do with what it claims to test. That is this repo's silent-partial-load
+	// shape, in the one tool whose entire job is refusing to emit a fixture it has not
+	// verified. The output directory must describe exactly one run.
+	stale, err := filepath.Glob(filepath.Join(outDir, "*.json"))
+	if err != nil {
+		return err
+	}
+	for _, f := range stale {
+		if err := os.Remove(f); err != nil {
+			return fmt.Errorf("clearing stale fixture %s: %w", f, err)
+		}
+	}
+	if len(stale) > 0 {
+		fmt.Printf("cleared %d fixture(s) from a previous run\n", len(stale))
+	}
+
 	var trusted [][]byte // CA DERs that go into the trust PEM
+	var written []string // names actually written by THIS run — the count is not a guess
 
 	write := func(name string, fx []byte) error {
-		return os.WriteFile(filepath.Join(outDir, name+".json"), fx, 0o644)
+		if err := os.WriteFile(filepath.Join(outDir, name+".json"), fx, 0o644); err != nil {
+			return err
+		}
+		written = append(written, name)
+		return nil
 	}
 
 	// 1. valid — age_over_18=true, DS chains to a trusted CA. -> ACCEPT.
@@ -683,10 +709,6 @@ func GenFixtures(circuitDir, outDir string) error {
 		pemBuf = append(pemBuf, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
 	}
 	if err := os.WriteFile(filepath.Join(outDir, "caCerts.pem"), pemBuf, 0o644); err != nil {
-		return err
-	}
-	written, err := filepath.Glob(filepath.Join(outDir, "*.json"))
-	if err != nil {
 		return err
 	}
 	fmt.Printf("wrote %d fixtures + caCerts.pem (%d trusted CA certs; untrusted-issuer's CA withheld)\n",

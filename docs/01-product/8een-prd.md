@@ -11,7 +11,7 @@ verifier exists" but "no adoptable drop-in exists, and the EU's official
 stack still cannot consume ZK proofs." **M1 PASSED** (2026-07-13, v0.1.0 —
 [evidence](../02-evidence/M1-EVIDENCE.md)). **M2 PASSED** (2026-07-14 — the suite
 mints its own credentials and runs the full §7.1 negative matrix and the §7.3
-unlinkability check against the real verifier, on the real clock: 18/18, 0 skipped.
+unlinkability check against the real verifier, on the real clock: 19/19, 0 skipped.
 The `ZKVERIFY_FAKE_TIME` scaffolding is gone; [evidence](../02-evidence/M2-EVIDENCE.md)).
 **Owner:** hamr0
 **Last updated:** 2026-07-12
@@ -173,11 +173,23 @@ left in a comment, because it is a real gap in an age check and the kind of thin
 that quietly never gets done. It is scheduled: **§7.4, M4.**
 
 ### 7.3 Unlinkability — honest split
-- **Tested by us:** two presentations of the same credential yield
-  verifier-side transcripts sharing no common identifier (black-box check).
+- **Tested by us (M2, PASSED):** two presentations of the same credential share no
+  detectable per-credential identifier. The check is a **black-box byte probe** on the
+  proofs: the longest contiguous run shared by two presentations of the *same*
+  credential is compared against two presentations of *different* credentials from the
+  same issuer, with a **planted identifier as a positive control** so the detector is
+  watched catching one before its null result is believed. Measured: same 8 B, different
+  8 B (identical — structure, no excess); planted 16 B control correctly flagged.
+  **Detection floor ≈ 11 bytes** — an 8-byte serial, or an encrypted/non-contiguous
+  identifier, would NOT be caught. ([evidence](../02-evidence/M2-EVIDENCE.md))
 - **Cited, not claimed:** full cryptographic unlinkability rests on the
   scheme's own security analysis (IETF draft + published reviews). The
   dossier says exactly which is which. No overselling.
+
+> Two earlier versions of this check were written and **retracted** — both passed on
+> first run and neither could fail (a verdict-equality tautology; a k-gram metric blind
+> below 16 bytes with a compare-a-blob-to-itself "control"). The evidence log records
+> both. The rule this cost us twice: *a guard you have not watched fire is not a guard.*
 
 ### 7.4 Freshness — M4's, both halves
 "Is this presentation still good **right now**" is one question with two halves, and

@@ -4,10 +4,12 @@
  * The trust-anchor tests use a one-circuit directory (they never verify a proof),
  * which keeps that from growing further.
  *
- * Requires the POC clone to be materialized (see poc/M0-EVIDENCE.md step 1) and a
- * Go toolchain with cgo, because the proof fixtures are MINTED at setup by
- * tools/mkfixture rather than committed. Skips cleanly when either is absent, so a
- * fresh checkout still runs green on the unit suite.
+ * Requires the POC clone (see poc/M0-EVIDENCE.md step 1). The proof-bearing tests
+ * additionally need the clone's cgo install/ prefix and a Go toolchain, because their
+ * fixtures are MINTED at run time by tools/mkfixture rather than committed. The two
+ * sets of prerequisites are gated separately -- see the two suites below -- so a
+ * machine without Go still RUNS the circuit and trust-list guards instead of skipping
+ * the file and reporting green.
  *
  * THE PINNED CLOCK IS GONE (M2).
  * Every earlier cut of this file ran the accept path under ZKVERIFY_FAKE_TIME,
@@ -18,8 +20,13 @@
  * could tell a working chain-validator from a broken one.
  *
  * The M2 test-CA removes it. Fixtures are minted at run time under a CA whose
- * validity window straddles the real wall clock, so they verify natively. There is
- * no ZKVERIFY_FAKE_TIME in this file, in src/, or anywhere else in the tree.
+ * validity window straddles the real wall clock, so they verify natively.
+ * ZKVERIFY_FAKE_TIME is no longer SET or read by anything: not here, not in src/.
+ * (It is not "absent from the tree" -- poc/patches/0001-zkverify-fake-time.patch,
+ * which teaches the upstream server to honour it, is still part of the documented
+ * clone-build recipe and stays. It is inert unless the variable is set, and nothing
+ * sets it. An earlier draft of this comment claimed the stronger thing, and a review
+ * caught that the tree falsifies it.)
  *
  * post1.json could not come with us, and this was measured rather than assumed. On
  * the real clock the service rejects EVERY post1-derived fixture at chain
@@ -86,7 +93,7 @@ function haveGo() {
  * fixture generator that quietly produces nothing, leaving a green suite behind, is
  * this project's signature bug wearing a lab coat.
  *
- * Measured: ~16s for all nine fixtures, against a suite whose circuit loads dominate
+ * Measured: ~18s for all ten fixtures, against a suite whose circuit loads dominate
  * at 45-70s per server.
  */
 function mintFixtures() {
@@ -101,42 +108,84 @@ function mintFixtures() {
   return dir;
 }
 
-// Building mkfixture links longfellow's static lib through cgo, so the POC's
-// install/ prefix must be present too -- not just the server binary. Checking only
-// the binary would let a clone that was materialized but never fully built sail past
-// the guard and blow up inside `go build` at module import, taking the whole file
-// down: including the four circuit/trust-list tests that need no fixtures at all.
-// Check every input we are about to depend on, rather than a proxy for them.
+/**
+ * TWO GATES, because the tests have two different sets of prerequisites and
+ * collapsing them costs coverage.
+ *
+ * The circuit and trust-list guards below verify NO proof: they assert that a
+ * half-loaded verifier refuses to come up. They need the server binary and the
+ * circuits, and nothing else. They are also the regression guards for this project's
+ * signature bug, so they are the LAST tests that should ever quietly stop running.
+ *
+ * An earlier cut of this file gated every test on one condition that included the Go
+ * toolchain and the cgo install/ prefix. On a machine with a fully built server but
+ * no Go, all 19 tests skipped and the suite exited 0 -- green, and guarding nothing.
+ * That is the silent-partial-load failure this very file exists to catch, committed
+ * in the file that catches it. Hence: core gate, fixture gate.
+ */
 const INSTALL = join(SERVER_DIR, '../install');
-const REQUIRED = [
-  join(SERVER_DIR, 'server'),
-  CIRCUIT_SOURCE,
+const coreMissing = [join(SERVER_DIR, 'server'), CIRCUIT_SOURCE].filter((p) => !existsSync(p));
+const fixtureMissing = [
   join(INSTALL, 'lib/libmdoc_static.a'),
   join(INSTALL, 'include/mdoc_zk.h'),
-];
-const missing = REQUIRED.filter((p) => !existsSync(p));
-const skipReason = missing.length
-  ? `POC clone not fully built -- missing ${missing.join(', ')} (see poc/M0-EVIDENCE.md step 1)`
-  : !haveGo()
-    ? 'Go toolchain absent -- needed to mint the M2 fixtures'
-    : false;
+].filter((p) => !existsSync(p));
 
-// Minted once for the whole file. If this throws, the suite fails: see mintFixtures.
-const FIXTURES = skipReason ? null : mintFixtures();
-
-const suite = { skip: skipReason };
-
-const RIG = {
-  binary: join(SERVER_DIR, 'server'),
-  circuitDir: CIRCUIT_SOURCE,
-  // The trust boundary for every proof below is the minted CA bundle, and nothing
-  // else. vicalUrl is deliberately NOT set: the suite exercises 8een's real default,
-  // which fetches no trust list at all.
-  caCerts: FIXTURES ? join(FIXTURES, 'caCerts.pem') : UPSTREAM_CERTS,
+/** Needs only the built server + circuits. */
+const suite = {
+  skip: coreMissing.length ? `POC clone not materialized -- missing ${coreMissing.join(', ')} (see poc/M0-EVIDENCE.md step 1)` : false,
 };
 
-/** The trust-anchor tests assert on what the verifier TRUSTS; they verify no proof. */
-const TRUST_RIG = { ...RIG, caCerts: wellFormedTrustList() };
+/** Additionally needs the cgo install/ prefix and a Go toolchain, to mint fixtures. */
+const proofSuite = {
+  skip: suite.skip
+    ? suite.skip
+    : fixtureMissing.length
+      ? `POC clone not built with its install/ prefix -- missing ${fixtureMissing.join(', ')} (mkfixture links it via cgo; see poc/M0-EVIDENCE.md step 1)`
+      : !haveGo()
+        ? 'Go toolchain absent -- needed to mint the M2 fixtures'
+        : false,
+};
+
+/**
+ * Minted LAZILY, on first use, and cached -- deliberately not at module scope.
+ *
+ * At module scope a mint failure throws during import, which node:test reports as a
+ * failure of the whole FILE: every test is lost, including the four that need no
+ * fixtures at all. Lazily, a mint failure fails exactly the tests that depend on it,
+ * loudly, and the circuit/trust-list guards still run and still guard.
+ *
+ * It is not caught and turned into a skip. A generator that quietly produces nothing
+ * and leaves a green suite behind is the bug this project keeps finding.
+ */
+let _fixtures = null;
+function fixtures() {
+  if (_fixtures === null) _fixtures = mintFixtures();
+  return _fixtures;
+}
+
+/**
+ * TRUST_RIG drives the circuit/trust-list guards. They verify no proof, so their
+ * trust list is upstream's own bundle and they never touch a fixture -- which is what
+ * lets them run on a clone with no Go toolchain.
+ *
+ * vicalUrl is deliberately NOT set anywhere: the suite exercises 8een's real default,
+ * which fetches no trust list at all.
+ */
+const TRUST_RIG = {
+  binary: join(SERVER_DIR, 'server'),
+  circuitDir: CIRCUIT_SOURCE,
+  caCerts: wellFormedTrustList(),
+};
+
+/**
+ * RIG drives every test that verifies a proof. Its trust boundary is the MINTED CA
+ * bundle and nothing else -- so it mints, and is therefore a function, not a const.
+ */
+const RIG = () => ({
+  binary: join(SERVER_DIR, 'server'),
+  circuitDir: CIRCUIT_SOURCE,
+  caCerts: join(fixtures(), 'caCerts.pem'),
+});
 
 /**
  * A directory holding exactly ONE circuit. The trust-anchor tests never verify a
@@ -154,7 +203,7 @@ function oneCircuitDir() {
 
 /** Fixtures are stored as the service's own wire format: base64 in JSON. */
 function proof(name) {
-  const j = JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), 'utf8'));
+  const j = JSON.parse(readFileSync(join(fixtures(), `${name}.json`), 'utf8'));
   return {
     transcript: Buffer.from(j.Transcript, 'base64'),
     deviceResponse: Buffer.from(j.ZKDeviceResponseCBOR, 'base64'),
@@ -176,7 +225,7 @@ const SUBSTITUTED_CLAIM = () => proof('substituted-claim');
 test('refuses to start when no circuits loaded, rather than serve confident nonsense', suite, async () => {
   const empty = mkdtempSync(join(tmpdir(), '8een-nocircuits-'));
   await assert.rejects(
-    Verifier.start({ ...RIG, circuitDir: empty, port: 8911, startupTimeoutMs: 15_000 }),
+    Verifier.start({ ...TRUST_RIG, circuitDir: empty, port: 8911, startupTimeoutMs: 15_000 }),
     /0 circuit files/,
     'a verifier with no circuits must not come up',
   );
@@ -202,7 +251,7 @@ test('refuses to start when only SOME circuits load', suite, async () => {
   // skips have been logged by that instant is a race, and asserting on it would
   // be asserting on the scheduler.
   await assert.rejects(
-    Verifier.start({ ...RIG, circuitDir: dir, port: 8915 }),
+    Verifier.start({ ...TRUST_RIG, circuitDir: dir, port: 8915 }),
     /rejected at least \d+ of 17 circuit files as not matching their circuit id/,
     'a half-loaded verifier reports healthy and rejects real proofs -- it must not come up',
   );
@@ -259,7 +308,7 @@ test('does not silently acquire trust anchors over the network', suite, async (t
 // The owner's primary success criterion (PRD §7.1). The strongest form of it: the
 // SAME BYTES, accepted or refused on the trust list alone. Not two different proofs
 // that happen to land differently -- one proof, two verifiers.
-test('trust discrimination: the same proof passes or fails on the trust list alone', suite, async (t) => {
+test('trust discrimination: the same proof passes or fails on the trust list alone', proofSuite, async (t) => {
   t.diagnostic('two servers, ~45s each -- circuit load dominates');
 
   // A real CA, generated at runtime, that simply is not this credential's issuer.
@@ -272,11 +321,11 @@ test('trust discrimination: the same proof passes or fails on the trust list alo
     '-days', '30', '-subj', '/CN=Not The Issuer/O=8een test',
   ], { stdio: 'ignore' });
 
-  const trusted = await Verifier.start({ ...RIG, port: 8912 });
+  const trusted = await Verifier.start({ ...RIG(), port: 8912 });
   t.after(() => trusted.stop());
   const accepted = await trusted.check(VALID());
 
-  const stranger = await Verifier.start({ ...RIG, caCerts: strangerCa, port: 8913 });
+  const stranger = await Verifier.start({ ...RIG(), caCerts: strangerCa, port: 8913 });
   t.after(() => stranger.stop());
   const rejected = await stranger.check(VALID());
 
@@ -290,10 +339,10 @@ test('trust discrimination: the same proof passes or fails on the trust list alo
   assert.equal(rejected.reason, REASONS.ISSUER_UNTRUSTED);
 });
 
-test('the negative matrix (PRD §7.1)', suite, async (t) => {
+test('the negative matrix (PRD §7.1)', proofSuite, async (t) => {
   // One loaded service, two thresholds on top of it -- both via the public
   // surface, so the suite never reaches into internals to make a point.
-  const service = new VerifierService({ ...RIG, port: 8914 });
+  const service = new VerifierService({ ...RIG(), port: 8914 });
   await service.start();
   t.after(() => service.stop());
 
@@ -437,22 +486,27 @@ test('the negative matrix (PRD §7.1)', suite, async (t) => {
  * somewhere else entirely. It is kept below as a smoke check, and it is NOT evidence.
  *
  * WHERE THE EVIDENCE ACTUALLY IS. The falsifiable check is
- * TestProofBytesCarryNoPerCredentialIdentifier in tools/mkfixture/unlink_test.go: it
- * compares the byte overlap between two presentations of the SAME credential against
- * two presentations of DIFFERENT credentials from the same issuer, with a
- * self-comparison as the harness control. A stable identifier hidden in the proof
- * would show up as excess same-credential overlap, and the test goes red. Measured:
- * self 360,013 shared 8-grams (the detector works), same-credential 1,
- * different-credential 1 -- background, and equal. It lives in Go because reading a
- * proof back means decoding CBOR, and 8een parses no CBOR and will not grow a parser
- * to test itself (NO-GO #8).
+ * TestProofBytesCarryNoPerCredentialIdentifier in tools/mkfixture/unlink_test.go. It
+ * measures the LONGEST CONTIGUOUS BYTE RUN shared by two proofs -- an identifier of L
+ * bytes forces that run to at least L -- and it carries a POSITIVE CONTROL: a known
+ * 16-byte identifier is planted from one presentation into another, and the real
+ * predicate must flag it as linkable. Measured: same-credential 8 B,
+ * different-credential 8 B (identical -- shared structure, no excess), planted control
+ * 16 B -> correctly flagged LINKABLE.
  *
- * STILL NOT CLAIMED: full cryptographic unlinkability. A byte-overlap probe can find
- * a naive identifier; it cannot rule out a subtle one. PRD §7.3 scopes that as cited,
+ * Its detection floor is ~11 bytes, and that is a real limit: the control was first
+ * written with an 8-byte tag and FAILED, because the structural background is already
+ * 8 B. An 8-byte serial would not be caught. Nor would an encrypted or non-contiguous
+ * one. Stated, not buried.
+ *
+ * It lives in Go because reading a proof back means decoding CBOR, and 8een parses no
+ * CBOR and will not grow a parser to test itself (NO-GO #8).
+ *
+ * STILL NOT CLAIMED: full cryptographic unlinkability. PRD §7.3 scopes that as cited,
  * not claimed -- it rests on the scheme's security analysis, not on us.
  */
-test('unlinkability: two presentations of one credential are indistinguishable (PRD §7.3)', suite, async (t) => {
-  const service = new VerifierService({ ...RIG, port: 8919 });
+test('unlinkability: two presentations of one credential are indistinguishable (PRD §7.3)', proofSuite, async (t) => {
+  const service = new VerifierService({ ...RIG(), port: 8919 });
   await service.start();
   t.after(() => service.stop());
 
@@ -478,8 +532,8 @@ test('unlinkability: two presentations of one credential are indistinguishable (
 
   // The presentations really were different bytes on the wire. Without this the
   // equalities above would be comparing a proof with itself.
-  const wireA1 = readFileSync(join(FIXTURES, 'unlinkable-a1.json'), 'utf8');
-  const wireA2 = readFileSync(join(FIXTURES, 'unlinkable-a2.json'), 'utf8');
+  const wireA1 = readFileSync(join(fixtures(), 'unlinkable-a1.json'), 'utf8');
+  const wireA2 = readFileSync(join(fixtures(), 'unlinkable-a2.json'), 'utf8');
   assert.notEqual(wireA1, wireA2, 'the two presentations must not be byte-identical, or this proves nothing');
 
   t.diagnostic(`verdicts identical across 3 presentations: ${JSON.stringify(a1)}`);
