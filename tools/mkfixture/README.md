@@ -105,6 +105,6 @@ go test ./...
 | `layout_test.go` | pure byte-layout unit tests |
 | `prove_test.go` | cgo discrimination tests (tag `cgo`) |
 
-The clean split (per `poc/m2-spike/FIXTURE-RESULT.md` gotcha 3): the **inner mdoc**
-is hand-encoded bytes because the circuit asserts rigid byte runs; the **outer
-service wire structs** use library `cbor.Marshal`. Do not mix them.
+The clean split (per `poc/m2-spike/SPIKE-RESULT.md`, "Hand-encoded vs library"): the
+**inner mdoc** is hand-encoded bytes because the circuit asserts rigid byte runs; the
+**outer service wire structs** use library `cbor.Marshal`. Do not mix them.

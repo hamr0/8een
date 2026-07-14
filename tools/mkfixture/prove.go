@@ -16,6 +16,7 @@ package main
 // main.go). Do NOT hard-code runtime circuit/output paths here.
 
 import (
+	"encoding/hex"
 	"fmt"
 	"unsafe"
 )
@@ -89,6 +90,37 @@ func verifierName(c int) string {
 		return n
 	}
 	return fmt.Sprintf("UNKNOWN(%d)", c)
+}
+
+// CircuitID returns the hex circuit id of the given circuit bytes, computed by
+// longfellow's OWN circuit_id() (mdoc_zk.h:191) — the same call the reference
+// verifier-service makes in realCircuitId (reference/.../zk/proofs.go:87-98). We
+// compute nothing ourselves; NO-GO #8 stands.
+//
+// This is not optional bookkeeping. longfellow deliberately does NOT check the id
+// itself — mdoc_zk.cc:112-113 sets enforce_circuit_id_in_prover = false and
+// enforce_circuit_id_in_verifier = false, above a comment stating that "the
+// application is expected to check the ID once, and then store the checked circuit
+// in trusted local storage." mkfixture is that application. Without this call, a
+// truncated or swapped circuit file is loaded silently and every fixture is
+// generated against a circuit the verifier will never use.
+func CircuitID(circuit []byte) (string, error) {
+	if len(circuit) == 0 {
+		return "", fmt.Errorf("empty circuit")
+	}
+	cCirc := (*C.uint8_t)(C.CBytes(circuit))
+	defer C.free(unsafe.Pointer(cCirc))
+
+	cid := C.malloc(32)
+	if cid == nil {
+		return "", fmt.Errorf("malloc for circuit id failed")
+	}
+	defer C.free(cid)
+
+	if C.circuit_id((*C.uint8_t)(cid), cCirc, C.size_t(len(circuit)), C.zkspec0()) == 0 {
+		return "", fmt.Errorf("longfellow circuit_id() rejected the circuit bytes")
+	}
+	return hex.EncodeToString(C.GoBytes(cid, 32)), nil
 }
 
 // buildAttrs creates a single-attribute RequestedAttribute array for

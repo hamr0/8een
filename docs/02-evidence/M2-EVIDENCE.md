@@ -87,17 +87,48 @@ they are recorded here because the spike dir is throwaway:
   to a real clock, which **removes the `ZKVERIFY_FAKE_TIME` scaffolding** the one
   real (expired) proof forced on the accept path.
 
+## The generator (`tools/mkfixture`) — measured 2026-07-14
+
+Dev-only Go tooling, outside the npm `files` allowlist; zero runtime deps preserved.
+Observed on one full run against the real static lib:
+
+| Scenario | Minted | Proof | longfellow's ZK verdict |
+|---|---|---|---|
+| `valid` | `age_over_18=true` | 361,108 B | **SUCCESS** |
+| `untrusted-issuer` | `age_over_18=true` | 360,372 B | **SUCCESS** — by design; it is refused at *chain* validation, its CA withheld from the trust PEM |
+| `underage` | `age_over_18=false` | 360,628 B | **SUCCESS** — an honestly-proven minor; the proof is valid, the *claim* is false |
+| `tampered` | `age_over_18=true`, one proof byte flipped | 360,948 B | **REFUSED** (`merkle_check failed`) |
+
+Certificates are issued on the real wall clock (observed window
+`2025-07-14 .. 2027-07-14`), which is what makes the `ZKVERIFY_FAKE_TIME`
+scaffolding removable rather than merely undesirable.
+
+Two things the generator **checks rather than assumes**, both instances of this
+repo's silent-partial-load theme:
+
+- **The circuit is verified by id, not by filename**, via longfellow's own
+  `circuit_id()` (`mdoc_zk.h:191`) — the same call the reference service makes. This
+  is not belt-and-braces: `mdoc_zk.cc:112-113` disables longfellow's internal id
+  enforcement and states that "the application is expected to check the ID once."
+  Verified empirically: a *truncated* circuit planted under the correct filename is
+  refused, exit 1, zero fixtures written.
+- **Every fixture is verified before it is written.** The leaf cert must carry the
+  exact key that signed the MSO (otherwise the chain validates, the service extracts
+  the *wrong* `(pkx,pky)`, and valid proofs fail while looking like bad crypto), and
+  the proof must reach the verdict its scenario claims — so a byte-flip that landed
+  on an inert byte fails generation instead of shipping as a negative test that
+  silently passes. Both guards are pinned by tests that assert they *fire*.
+
 ## Still owed before M2 can be called PASSED
 
-- Productionize the minter as dev-only tooling that emits fixtures the JS suite
-  consumes (Go stays out of the npm package — zero runtime deps preserved).
-- The full negative matrix as executable fixtures: valid, underage, wrong-issuer,
-  tampered (byte-flip), stale/wrong-nonce (PRD §7.1).
-- Remove `ZKVERIFY_FAKE_TIME` from the integration harness once minted certs are
-  unexpired.
+- Wire the JS integration suite onto these fixtures (the generator emits them; the
+  suite does not yet consume them).
+- The last row of the negative matrix: stale/wrong-nonce (PRD §7.1). The other four
+  — valid, underage, wrong-issuer, tampered — are emitted and self-verified above.
+- Remove `ZKVERIFY_FAKE_TIME` from the integration harness once the suite is on the
+  minted (unexpired) certs.
 - §7.3 unlinkability black-box check: two presentations of the same credential
   share no verifier-side identifier (requires proving the same credential twice).
-- Verify the circuit-id on load.
 
 ## Honesty notes
 

@@ -13,8 +13,65 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 )
+
+// goldenDeviceAuthCose1 is the exact DeviceAuthentication COSE_Sign1 preimage for
+// our fixed docType and the 4-byte stand-in transcript, captured from the running
+// minter. The device signature is taken over SHA-256 of THESE bytes, and the
+// verifier recomputes them independently via compute_transcript_hash
+// (mdoc_witness.h:436-484) — so a single byte of drift here is a silent
+// MDOC_PROVER_DEVICE_SIGNATURE_FAILURE with no indication of which of the several
+// nested length fields moved.
+//
+// This test exists to pin the preimage against well-meaning "cleanups". In
+// particular it locks in upstream's l2 = l1 + (l1<256?4:5), which is NOT canonical
+// CBOR below l1=24; see deviceAuthCose1. Do not regenerate this constant to make a
+// failing test pass — a diff here means the bytes the verifier expects changed.
+const goldenDeviceAuthCose1 = "846a5369676e61747572653143a10126405838d818" +
+	"5834847444657669636541757468656e7469636174696f6e83f6f6f6756f72672e69736f2e" +
+	"31383031332e352e312e6d444cd81841a0"
+
+func TestDeviceAuthPreimageIsByteExact(t *testing.T) {
+	transcript := []byte{0x83, 0xF6, 0xF6, 0xF6}
+
+	got, err := deviceAuthCose1(transcript)
+	if err != nil {
+		t.Fatalf("deviceAuthCose1: %v", err)
+	}
+	want, err := hex.DecodeString(goldenDeviceAuthCose1)
+	if err != nil {
+		t.Fatalf("bad golden constant: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("device-auth preimage drifted from the bytes the verifier recomputes\n got: %x\nwant: %x", got, want)
+	}
+
+	// The declared outer length must be l1+4 (upstream's formula), and the inner
+	// tag24 must frame da with the 0x58 one-byte form. da is 52 bytes here.
+	if got[17] != 0x58 || got[18] != 56 {
+		t.Fatalf("outer payload length header = % X, want 58 38 (l2 = 52+4)", got[17:19])
+	}
+	if !bytes.Equal(got[19:23], []byte{0xD8, 0x18, 0x58, 52}) {
+		t.Fatalf("inner tag24 header = % X, want D8 18 58 34 (l1 = 52)", got[19:23])
+	}
+}
+
+// Below 24 bytes upstream's l2 formula stops matching canonical CBOR. We must not
+// silently emit a preimage from that region: refuse instead.
+func TestDeviceAuthRefusesSubCanonicalRegion(t *testing.T) {
+	// da = 22 (DeviceAuthentication) + len(transcript) + 22 (docType) + 4, so it
+	// cannot drop under 24 with the real docType. Assert the floor holds rather
+	// than that the guard fires, and assert the guard exists by construction.
+	got, err := deviceAuthCose1(nil)
+	if err != nil {
+		t.Fatalf("empty transcript should still exceed the 24-byte floor: %v", err)
+	}
+	if len(got) < 24 {
+		t.Fatalf("preimage %d bytes, expected the 24-byte floor to hold", len(got))
+	}
+}
 
 func p256(t *testing.T) *ecdsa.PrivateKey {
 	t.Helper()

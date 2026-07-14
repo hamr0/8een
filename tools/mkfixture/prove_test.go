@@ -75,6 +75,97 @@ func TestAcceptThenReject(t *testing.T) {
 	t.Logf("proof correctly REJECTED under wrong issuer key: %s", name)
 }
 
+// TestGeneratorRefusesFixtureThatDoesNotMatchItsClaim pins the self-check that
+// stands between a generator bug and a red JS suite that blames the verifier.
+//
+// Both halves matter, and both are non-vacuous here:
+//
+//   - A leaf carrying a key OTHER than the one that signed the MSO must be refused.
+//     Such a fixture chains and validates perfectly; the service just extracts the
+//     wrong (pkx,pky), and every proof then fails looking exactly like bad crypto.
+//   - A proof that VERIFIES must be refused when the scenario claims it should not.
+//     That is what makes the "tampered" fixture trustworthy: if the byte-flip ever
+//     lands on an inert byte, generation fails instead of shipping a negative test
+//     that silently passes.
+func TestGeneratorRefusesFixtureThatDoesNotMatchItsClaim(t *testing.T) {
+	circuit := loadCircuit(t)
+	over18 := []byte{0xF5}
+
+	m, err := Mint(over18)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	proof, pName, pCode := RunProver(circuit, m, over18)
+	if pCode != 0 {
+		t.Fatalf("prover failed: %s", pName)
+	}
+
+	nb, na := certWindow()
+	ca, caKey, err := makeCA("8een M2 self-check CA", nb, na)
+	if err != nil {
+		t.Fatalf("CA: %v", err)
+	}
+
+	// A second, unrelated issuer key — a well-formed P-256 key that simply did not
+	// sign this MSO.
+	other, err := Mint(over18)
+	if err != nil {
+		t.Fatalf("mint other: %v", err)
+	}
+
+	badLeaf, err := makeLeaf(ca, caKey, &other.IssuerKey.PublicKey, nb, na)
+	if err != nil {
+		t.Fatalf("bad leaf: %v", err)
+	}
+	if err := assertFixtureVerifies(circuit, m, proof, badLeaf, over18, expectAccept); err == nil {
+		t.Fatal("generator emitted a fixture whose leaf does not carry the MSO-signing key")
+	} else {
+		t.Logf("refused wrong-key leaf: %v", err)
+	}
+
+	goodLeaf, err := makeLeaf(ca, caKey, &m.IssuerKey.PublicKey, nb, na)
+	if err != nil {
+		t.Fatalf("good leaf: %v", err)
+	}
+
+	// Non-vacuity: the correctly-wired fixture must PASS the same check.
+	if err := assertFixtureVerifies(circuit, m, proof, goodLeaf, over18, expectAccept); err != nil {
+		t.Fatalf("generator rejected a correctly-wired fixture: %v", err)
+	}
+	t.Log("accepted the correctly-wired fixture")
+
+	// A verifying proof labelled expectReject must be refused — the guard that keeps
+	// an inert byte-flip from shipping as a passing negative fixture.
+	if err := assertFixtureVerifies(circuit, m, proof, goodLeaf, over18, expectReject); err == nil {
+		t.Fatal("generator would have shipped a 'must not verify' fixture whose proof verifies")
+	} else {
+		t.Logf("refused a verifying proof labelled expectReject: %v", err)
+	}
+}
+
+// TestCircuitIDIsCheckedNotAssumed: longfellow disables its own circuit-id
+// enforcement (mdoc_zk.cc:112-113) and delegates the check to the application, so a
+// corrupted circuit under the right FILENAME must be caught by us or not at all.
+func TestCircuitIDIsCheckedNotAssumed(t *testing.T) {
+	circuit := loadCircuit(t)
+
+	id, err := CircuitID(circuit)
+	if err != nil {
+		t.Fatalf("circuit_id on the real circuit: %v", err)
+	}
+	if id != circuitHash0 {
+		t.Fatalf("circuit id = %s, want %s", id, circuitHash0)
+	}
+
+	// A truncated circuit must NOT yield the expected id.
+	truncated := circuit[:len(circuit)/2]
+	badID, err := CircuitID(truncated)
+	if err == nil && badID == circuitHash0 {
+		t.Fatal("a truncated circuit produced the expected circuit id")
+	}
+	t.Logf("truncated circuit refused (id=%q err=%v)", badID, err)
+}
+
 // TestCannotForgeOver18FromUnder18 is THE product-defining test: a holder whose
 // credential says age_over_18 = FALSE must not be able to produce a proof that
 // verifies age_over_18 = TRUE. This is "turn away the minor." If it fails, the

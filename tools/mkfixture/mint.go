@@ -8,10 +8,10 @@ package main
 // lib/circuits/mdoc/mdoc_hash.h:180-284) asserts rigid byte patterns at recorded
 // offsets. A general CBOR encoder will not reliably emit the double-nested MSO
 // length framing, the exact COSE_Key byte run, the tag24 wrappers, or the
-// Sig_structure preimages. The clean split (FIXTURE-RESULT.md gotcha 3) is:
-// inner mdoc = hand-rolled bytes (this file); outer service wire structs =
-// library cbor.Marshal (fixture.go). Mixing the two invites silent drift in
-// exactly the fields that fail closed.
+// Sig_structure preimages. The clean split (poc/m2-spike/SPIKE-RESULT.md,
+// "Hand-encoded vs library") is: inner mdoc = hand-rolled bytes (this file);
+// outer service wire structs = library cbor.Marshal (fixture.go). Mixing the two
+// invites silent drift in exactly the fields that fail closed.
 //
 // This file is pure (no cgo): the byte builders below are unit-tested under plain
 // `go test` even without the longfellow clone. See layout_test.go.
@@ -43,22 +43,42 @@ func tstr(s string) []byte {
 	panic("tstr too long")
 }
 
-// bstr encodes a CBOR byte string with a length header chosen by size. The size
-// thresholds are load-bearing elsewhere: a byte string of >= 256 bytes gets the
+// bstrLen returns the CBOR byte-string LENGTH HEADER for n, and is the single
+// source of truth for that framing. It mirrors longfellow's own append_bytes_len
+// (mdoc_witness.h:402-413) byte-for-byte, including its len < 65536 bound — the
+// device-signature preimage in deviceAuthCose1 must reproduce upstream's bytes
+// exactly, so this must not drift from it.
+//
+// The size thresholds are load-bearing: a byte string of >= 256 bytes gets the
 // 0x59 two-byte length form, which is exactly what the prover hard-codes for the
 // tagged MSO payload (see mintWith).
-func bstr(b []byte) []byte {
-	n := len(b)
+func bstrLen(n int) []byte {
 	switch {
 	case n < 24:
-		return append([]byte{byte(0x40 | n)}, b...)
+		return []byte{byte(0x40 | n)}
 	case n < 256:
-		return append([]byte{0x58, byte(n)}, b...)
+		return []byte{0x58, byte(n)}
 	case n < 65536:
-		return append([]byte{0x59, byte(n >> 8), byte(n)}, b...)
+		return []byte{0x59, byte(n >> 8), byte(n)}
 	default:
 		panic("bstr too long")
 	}
+}
+
+// bstr encodes a CBOR byte string: length header + payload.
+func bstr(b []byte) []byte { return append(bstrLen(len(b)), b...) }
+
+// cborUint encodes a CBOR unsigned int, immediate form only. Every uint we emit is
+// a small map key (digestID), and the >= 24 forms are multi-byte: emitting one
+// would shift every subsequent byte offset the circuit reads at. Refuse loudly
+// rather than silently corrupt the layout — 0x18 alone (the value of byte(24)) is
+// the "one length byte follows" header, so an unguarded byte(n) at n=24 produces a
+// truncated header and a map the parser misreads at a shifted offset.
+func cborUint(n int) []byte {
+	if n < 0 || n >= 24 {
+		panic(fmt.Sprintf("cborUint: %d out of range [0,24); a multi-byte uint would shift the circuit's byte offsets", n))
+	}
+	return []byte{byte(n)}
 }
 
 func be16(n int) []byte { return []byte{byte(n >> 8), byte(n)} }
@@ -171,7 +191,7 @@ func buildTDate(s string) []byte {
 func buildIssuerSignedItemMap(digestID int, salt []byte, id string, elemValue []byte) []byte {
 	return cat(
 		[]byte{0xA4},
-		tstr("digestID"), []byte{byte(digestID)}, // uint (digestID < 24)
+		tstr("digestID"), cborUint(digestID),
 		tstr("random"), bstr(salt),
 		tstr("elementIdentifier"), tstr(id),
 		tstr("elementValue"), elemValue,
@@ -209,8 +229,8 @@ func buildDeviceKeyInfo(coseKey []byte) []byte {
 func buildValueDigests(digestID int, itemDigest []byte) []byte {
 	inner := cat(
 		[]byte{0xA1},
-		[]byte{byte(digestID)},              // uint key (digestID < 24)
-		[]byte{0x58, 0x20}, itemDigest[:32], // bstr32
+		cborUint(digestID),
+		bstr(itemDigest[:32]), // bstr32 -> 58 20 <32>
 	)
 	return cat([]byte{0xA1}, tstr(namespace), inner)
 }
@@ -307,7 +327,11 @@ func mintWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*MintRe
 	// ---- issuerAuth COSE_Sign1 array [protected, unprotected, payload, sig] ----
 	// [0]/[1] (incl. any x5chain) are NEVER parsed by the prover — cert-chain
 	// identity is only the (pkx,pky) args. payload [2] is the tagged MSO bstr.
-	payload := cat([]byte{0x59}, be16(tmsoLen), tmsoContent) // bstr of tmsoContent
+	// bstr(tmsoContent) IS the 0x59 two-byte form here, not by luck: tmsoContent is
+	// 5 + len(MSO) and len(MSO) >= 256 is enforced above, so bstrLen always picks
+	// 0x59. Hand-rolling the header again would just be a second place to get it
+	// wrong.
+	payload := bstr(tmsoContent)
 	issuerAuth := cat(
 		[]byte{0x84},
 		bstr([]byte{0xA1, 0x01, 0x26}), // [0] protected {1:-7} = 43 A10126
@@ -376,48 +400,72 @@ func mintWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*MintRe
 	}, nil
 }
 
-// deviceSignature replicates compute_transcript_hash (mdoc_witness.h:436-484)
-// exactly, then signs the SHA-256 with the device key (raw r||s). The preimage
-// embeds the docType and an empty-namespaces tag; the transcript is inserted
-// verbatim (SPIKE-RESULT.md gotcha 3).
+// deviceSignature signs the SHA-256 of the DeviceAuthentication preimage with the
+// device key (raw r||s).
 func deviceSignature(device *ecdsa.PrivateKey, transcript []byte) ([]byte, error) {
+	cose1, err := deviceAuthCose1(transcript)
+	if err != nil {
+		return nil, err
+	}
+	digest := sha256.Sum256(cose1)
+	return rawSig(device, digest[:])
+}
+
+// deviceAuthCose1 rebuilds the COSE_Sign1 preimage that longfellow's
+// compute_transcript_hash (mdoc_witness.h:436-484) hashes, byte for byte
+// (SPIKE-RESULT.md gotcha 3). It embeds the docType and an empty-namespaces tag,
+// and inserts the transcript VERBATIM — any drift from the transcript handed to
+// run_mdoc_prover/verifier yields MDOC_PROVER_DEVICE_SIGNATURE_FAILURE.
+//
+// This is a REPLICA of upstream, not an independent encoder. The verifier hashes
+// its own copy of these bytes and compares, so "more correct than upstream" is the
+// same thing as "wrong". Split out from deviceSignature so it can be golden-tested
+// without randomness (layout_test.go).
+func deviceAuthCose1(transcript []byte) ([]byte, error) {
 	deviceAuthentication := []byte{
 		0x84, 0x74, 'D', 'e', 'v', 'i', 'c', 'e', 'A', 'u', 't',
 		'h', 'e', 'n', 't', 'i', 'c', 'a', 't', 'i', 'o', 'n',
 	}
-	// docType (len 21 < 256) => append_text_len => 0x60|21 = 0x75
-	docTypeBytes := append([]byte{byte(0x60 | len(docType))}, []byte(docType)...)
-	deviceNameSpaces := []byte{0xD8, 0x18, 0x41, 0xA0} // tag24(empty map)
+	// docType framing is upstream's append_text_len (mdoc_witness.h:417), which tstr
+	// reproduces exactly (0x60|n under 24, else 0x78 n): docType is 21 chars, so
+	// 0x75. tstr is used rather than a local 0x60|len because the latter silently
+	// emits a headerless 0x78 at len >= 24.
+	da := cat(
+		deviceAuthentication,
+		transcript,
+		tstr(docType),
+		[]byte{0xD8, 0x18, 0x41, 0xA0}, // DeviceNameSpacesBytes = tag24(empty map)
+	)
 
-	da := cat(deviceAuthentication, transcript, docTypeBytes, deviceNameSpaces)
-
-	appendBytesLen := func(buf []byte, l int) []byte {
-		switch {
-		case l < 24:
-			return append(buf, byte(0x40|l))
-		case l < 256:
-			return append(buf, 0x58, byte(l))
-		default:
-			return append(buf, 0x59, byte(l>>8), byte(l))
-		}
-	}
-
-	cose1 := []byte{
-		0x84, 0x6A, 0x53, 0x69, 0x67, 0x6E, 0x61, 0x74, 0x75, 0x72, 0x65, 0x31,
-		0x43, 0xA1, 0x01, 0x26, 0x40,
-	}
 	l1 := len(da)
-	l2 := l1
-	if l1 < 256 {
-		l2 += 4
-	} else {
-		l2 += 5
-	}
-	cose1 = appendBytesLen(cose1, l2)
-	cose1 = append(cose1, 0xD8, 0x18)
-	cose1 = appendBytesLen(cose1, l1)
-	cose1 = append(cose1, da...)
 
-	digest := sha256.Sum256(cose1)
-	return rawSig(device, digest[:])
+	// Upstream computes `size_t l2 = l1 + (l1 < 256 ? 4 : 5);` (mdoc_witness.h:475).
+	// DO NOT "correct" this to a canonical length. Below l1 = 24 the tag24 bstr
+	// header is one byte, so the canonical length would be l1+3 and upstream's
+	// formula over-declares by one — but the verifier recomputes the SAME formula,
+	// so the two agree and the signature checks out. Making it canonical here would
+	// diverge our preimage from the verifier's and fail every device signature.
+	//
+	// The guard keeps us out of that region entirely rather than relying on it being
+	// self-consistent: da is 52 bytes for our fixed docType and 4-byte transcript.
+	if l1 < 24 {
+		return nil, fmt.Errorf(
+			"DeviceAuthentication is %d bytes; under 24 upstream's l2 formula (mdoc_witness.h:475) leaves canonical CBOR", l1)
+	}
+	l2 := l1 + 4
+	if l1 >= 256 {
+		l2 = l1 + 5
+	}
+
+	// 84 6A "Signature1" 43 A10126 40 || bstrLen(l2) || D8 18 || bstrLen(l1) || da
+	return cat(
+		[]byte{
+			0x84, 0x6A, 0x53, 0x69, 0x67, 0x6E, 0x61, 0x74, 0x75, 0x72, 0x65, 0x31,
+			0x43, 0xA1, 0x01, 0x26, 0x40,
+		},
+		bstrLen(l2),
+		[]byte{0xD8, 0x18},
+		bstrLen(l1),
+		da,
+	), nil
 }
