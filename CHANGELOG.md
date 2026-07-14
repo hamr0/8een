@@ -4,6 +4,48 @@ All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) ·
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] — 2026-07-14
+
+**M2 PASSED.** The test suite now mints its own credentials and runs against the
+real verifier on the real clock. As with `0.1.1`, the runtime is **byte-identical**:
+`src/` and `types/` are untouched, dependencies are still zero, and every gap listed
+under `0.1.0` is still open. Nothing here changes what an adopter installs — it
+changes what we can *prove* about it, which had been weaker than we said.
+
+### Changed (test + dev-only — nothing in the tarball changes but this README)
+- **The pinned verification clock is gone.** Every earlier suite ran the accept path
+  under `ZKVERIFY_FAKE_TIME`, because the only real proof available carried a cert
+  chain that expired 2026-05-07. That pin was quietly load-bearing: with x509
+  verification frozen at a date where the one chain happened to be valid, **no test
+  could tell a working certificate-chain validator from a broken one.** The suite now
+  mints unexpired credentials at run time and verifies them on the real clock.
+- **The §7.1 negative matrix is complete**, and two rows are new:
+  - **a proof replayed into a different session** is refused — the device signature
+    will not match a preimage rebuilt over another transcript. (A byte-identical
+    replay in its *own* session is still **accepted**, by design: the verifier is
+    stateless. Freshness is the gate's job — M4. **8een is not replay-safe.**)
+  - **a minor cannot relabel their own valid proof as over-18.** An honest
+    `age_over_18=false` proof, with one byte of the wire envelope edited to claim
+    `true`, is refused by the ZK binding. Nothing is forged; only the envelope lies.
+    A false accept here would have admitted a minor on their own valid proof, and
+    nothing was testing for it.
+- **§7.3 unlinkability is now evidenced by a check that can fail.** Two earlier
+  versions were written and **retracted** — both passed on first run and neither
+  could fail. The check that stands measures the longest contiguous byte run shared
+  by two presentations, and **plants a known identifier as a positive control** so
+  the detector is watched catching one before its null result is believed. Its
+  detection floor is ~11 bytes and that is stated, not buried: an 8-byte serial, or
+  an encrypted identifier, would not be caught. Full cryptographic unlinkability
+  remains **cited, not claimed**.
+
+### Known gap (scheduled, not hidden)
+- **Credential expiry is exercised by no test.** M2 made the *certificate chain*
+  clock real; the *credential's own* clock is still a frozen constant, so the mdoc
+  validity window is never checked against real time. An expired credential is
+  currently refused by nothing we test. Scheduled as **PRD §7.4, owned by M4**,
+  alongside the nonce — "is this presentation still good right now" is one question
+  with two halves, and a stateless verifier can answer neither alone.
+
 ## [0.1.1] — 2026-07-14
 
 A documentation correction to the adopter contract, plus the M2 test-CA and

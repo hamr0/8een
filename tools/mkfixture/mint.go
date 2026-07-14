@@ -144,6 +144,9 @@ const (
 )
 
 // MintResult carries everything the prover/verifier and the service wrapper need.
+// It describes ONE PRESENTATION: a credential shown against one session
+// transcript. Two presentations of the same Credential differ only in Transcript
+// and the deviceSigned block computed over it (see Credential.Present).
 type MintResult struct {
 	DeviceResponse []byte
 	Transcript     []byte
@@ -155,6 +158,60 @@ type MintResult struct {
 	// this exact public key, so the key validateIssuerKey extracts from the cert
 	// equals the key the proof was generated under. This is the whole trust seam.
 	IssuerKey *ecdsa.PrivateKey
+}
+
+// Credential is the ISSUED artifact, independent of any session: the issuer key,
+// the device key, the salt, and the signed MSO. It is what an issuer hands a
+// holder once; a holder then Presents it many times, against a different session
+// transcript each time.
+//
+// The split exists because two things need it and neither is expressible without
+// it:
+//
+//  1. the stale/wrong-nonce negative (PRD §7.1) — prove against transcript A,
+//     present against transcript B;
+//  2. the unlinkability check (PRD §7.3) — the SAME credential presented twice,
+//     which requires holding issuer key, device key, salt and MSO fixed while the
+//     transcript varies. Calling Mint twice cannot express it: Mint re-rolls all
+//     three, so the two presentations would be different credentials.
+type Credential struct {
+	IssuerKey *ecdsa.PrivateKey
+	DocType   string
+	IssuerPkX string
+	IssuerPkY string
+
+	device       *ecdsa.PrivateKey
+	issuerSigned []byte
+}
+
+// defaultTranscript is the 4-byte SessionTranscript stand-in ([null, null, null]).
+// It carries no nonce, so it cannot express "a different session" — presentations
+// that need to be distinguishable use sessionTranscript() instead. It remains the
+// transcript for plain Mint(), and it is the one the golden preimage test pins.
+var defaultTranscript = []byte{0x83, 0xF6, 0xF6, 0xF6}
+
+// sessionTranscript returns a SessionTranscript stand-in carrying a per-session
+// nonce: [null, null, h'<nonce>'] — structurally the real thing's
+// [DeviceEngagementBytes, EReaderKeyBytes, Handover] with the nonce in the
+// handover slot.
+//
+// longfellow does not parse this: it is inserted VERBATIM into the device-auth
+// preimage and hashed, and the verifier recomputes the same bytes. So its only
+// hard requirement is that prover and verifier see identical bytes — which is
+// exactly what the wrong-nonce fixture violates on purpose.
+func sessionTranscript(nonce []byte) []byte {
+	return cat([]byte{0x83, 0xF6, 0xF6}, bstr(nonce))
+}
+
+// newSessionTranscript mints a fresh 16-byte-nonce transcript. Every fixture
+// presentation gets its own, so no two presentations are byte-identical by
+// accident — an accident that would make the unlinkability check pass vacuously.
+func newSessionTranscript() ([]byte, error) {
+	nonce := make([]byte, 16)
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("session nonce: %w", err)
+	}
+	return sessionTranscript(nonce), nil
 }
 
 // ---- rigid byte builders (unit-tested directly in layout_test.go) ----
@@ -265,14 +322,32 @@ var kCose1Prefix = []byte{
 }
 
 // Mint synthesises a full DeviceResponse under freshly generated test keys,
-// asserting age_over_18 = elemValue (0xF5 = CBOR true, 0xF4 = CBOR false).
+// asserting age_over_18 = elemValue (0xF5 = CBOR true, 0xF4 = CBOR false). It is
+// one credential presented once, against the nonce-less default transcript.
 func Mint(elemValue []byte) (*MintResult, error) {
-	// Fresh P-256 issuer (CA/MSO-signing) key and device key, generated at runtime.
-	// No keys are ever written to the tree (PRD §10).
+	c, err := MintCredential(elemValue)
+	if err != nil {
+		return nil, err
+	}
+	return c.Present(defaultTranscript)
+}
+
+// MintCredential issues one credential under a fresh issuer.
+func MintCredential(elemValue []byte) (*Credential, error) {
+	// Fresh P-256 issuer (CA/MSO-signing) key, generated at runtime. No keys are
+	// ever written to the tree (PRD §10).
 	issuer, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
 	}
+	return MintCredentialUnder(issuer, elemValue)
+}
+
+// MintCredentialUnder issues a credential under an EXISTING issuer key, with a
+// fresh device key and salt — i.e. a different credential from the same issuer.
+// The unlinkability check (PRD §7.3) needs this as its control: it is what proves
+// that the identifiers the verifier can see are the issuer's, not the holder's.
+func MintCredentialUnder(issuer *ecdsa.PrivateKey, elemValue []byte) (*Credential, error) {
 	device, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -281,13 +356,24 @@ func Mint(elemValue []byte) (*MintResult, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
 	}
-	return mintWith(issuer, device, salt, elemValue)
+	return credentialWith(issuer, device, salt, elemValue)
 }
 
 // mintWith is the deterministic core of Mint: given fixed keys, salt and value it
 // assembles a byte-identical DeviceResponse. Split out so layout_test.go can
 // assert exact bytes without relying on runtime randomness.
 func mintWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*MintResult, error) {
+	c, err := credentialWith(issuer, device, salt, elemValue)
+	if err != nil {
+		return nil, err
+	}
+	return c.Present(defaultTranscript)
+}
+
+// credentialWith builds the ISSUED half — everything signed by the issuer and
+// therefore fixed for the life of the credential. Nothing here depends on a
+// session; the transcript enters only in Present.
+func credentialWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*Credential, error) {
 	const digestID = 0
 
 	// ---- IssuerSignedItem (tag24-wrapped A4 map, exactly 4 keys) ----
@@ -352,12 +438,25 @@ func mintWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*MintRe
 		tstr("issuerAuth"), issuerAuth,
 	)
 
-	// ---- deviceSigned ----
-	// SessionTranscript stand-in, inserted VERBATIM into both the device signature
-	// preimage and passed to run_mdoc_prover/verifier. Any drift between the two
-	// yields MDOC_PROVER_DEVICE_SIGNATURE_FAILURE.
-	transcript := []byte{0x83, 0xF6, 0xF6, 0xF6}
-	deviceSig, err := deviceSignature(device, transcript)
+	return &Credential{
+		IssuerKey:    issuer,
+		DocType:      docType,
+		IssuerPkX:    pkString(issuer.PublicKey.X),
+		IssuerPkY:    pkString(issuer.PublicKey.Y),
+		device:       device,
+		issuerSigned: issuerSigned,
+	}, nil
+}
+
+// Present shows the credential against ONE session transcript, producing the
+// deviceSigned block and the full DeviceResponse.
+//
+// The transcript is inserted VERBATIM into both the device-signature preimage and
+// (by the caller) passed to run_mdoc_prover/verifier. Any drift between the two
+// yields MDOC_PROVER_DEVICE_SIGNATURE_FAILURE — which is precisely the mechanism
+// the stale-nonce fixture exploits: prove under transcript A, present under B.
+func (c *Credential) Present(transcript []byte) (*MintResult, error) {
+	deviceSig, err := deviceSignature(c.device, transcript)
 	if err != nil {
 		return nil, err
 	}
@@ -380,7 +479,7 @@ func mintWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*MintRe
 	document := cat(
 		[]byte{0xA3},
 		tstr("docType"), tstr(docType),
-		tstr("issuerSigned"), issuerSigned,
+		tstr("issuerSigned"), c.issuerSigned,
 		tstr("deviceSigned"), deviceSigned,
 	)
 	deviceResponse := cat(
@@ -393,10 +492,10 @@ func mintWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*MintRe
 	return &MintResult{
 		DeviceResponse: deviceResponse,
 		Transcript:     transcript,
-		IssuerPkX:      pkString(issuer.PublicKey.X),
-		IssuerPkY:      pkString(issuer.PublicKey.Y),
-		DocType:        docType,
-		IssuerKey:      issuer,
+		IssuerPkX:      c.IssuerPkX,
+		IssuerPkY:      c.IssuerPkY,
+		DocType:        c.DocType,
+		IssuerKey:      c.IssuerKey,
 	}, nil
 }
 
@@ -447,7 +546,10 @@ func deviceAuthCose1(transcript []byte) ([]byte, error) {
 	// diverge our preimage from the verifier's and fail every device signature.
 	//
 	// The guard keeps us out of that region entirely rather than relying on it being
-	// self-consistent: da is 52 bytes for our fixed docType and 4-byte transcript.
+	// self-consistent. With our fixed docType, da = 48 + len(transcript): 52 bytes for
+	// the 4-byte default transcript the golden test pins, 68 for the 20-byte
+	// nonce-bearing transcript every minted fixture now uses. Both clear 24 by a wide
+	// margin, and the guard fires rather than guesses if a caller ever shrinks it.
 	if l1 < 24 {
 		return nil, fmt.Errorf(
 			"DeviceAuthentication is %d bytes; under 24 upstream's l2 formula (mdoc_witness.h:475) leaves canonical CBOR", l1)

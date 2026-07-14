@@ -9,10 +9,10 @@ duty and is a hard M4 requirement). Precision note from M0: longfellow-zk ships 
 verifier *service* (Docker/cgo, US-DMV trust list) — so the claim is not "no
 verifier exists" but "no adoptable drop-in exists, and the EU's official
 stack still cannot consume ZK proofs." **M1 PASSED** (2026-07-13, v0.1.0 —
-[evidence](../02-evidence/M1-EVIDENCE.md)). **M2 IN PROGRESS** — the de-risking
-spike passed (2026-07-14: a self-minted credential is proved and verified by
-longfellow's own prover/verifier, with underage-forgery and wrong-issuer both
-refused; [evidence](../02-evidence/M2-EVIDENCE.md)); productionization owed.
+[evidence](../02-evidence/M1-EVIDENCE.md)). **M2 PASSED** (2026-07-14 — the suite
+mints its own credentials and runs the full §7.1 negative matrix and the §7.3
+unlinkability check against the real verifier, on the real clock: 19/19, 0 skipped.
+The `ZKVERIFY_FAKE_TIME` scaffolding is gone; [evidence](../02-evidence/M2-EVIDENCE.md)).
 **Owner:** hamr0
 **Last updated:** 2026-07-12
 
@@ -139,7 +139,7 @@ bit; the API physically cannot return an age.
 | **M1 — verify module** | The pure verdict module + core wrapper, behavior-level tests incl. all §7 negatives. | "The binary's output can be classified into a trustworthy one-bit verdict." |
 | **M2 — full local loop** | Test-CA + prover CLI; end-to-end offline: mint → prove → verify. Unlinkability transcript check (§7.3). | "We can generate spec-conformant credentials/proofs ourselves." |
 | **M3 — EU interop** | Verify a proof produced by the EU AV app's demo build (Android, driven via baremobile/emulator). | "The EU app's proofs are format-compatible with upstream longfellow." **Fallback if brittle:** interop vs. longfellow's reference prover; EU-app interop documented as pending in the dossier. |
-| **M4 — the gate** | Endpoint + middleware + demo site. All AGENT_RULES invariants apply (rate-limiting, unhappy paths, no `0.0.0.0`). Probe-style check: middleware consumes only the verify module's public surface. | "A mid-size site can adopt this without thinking." |
+| **M4 — the gate** | Endpoint + middleware + demo site. All AGENT_RULES invariants apply (rate-limiting, unhappy paths, no `0.0.0.0`). Probe-style check: middleware consumes only the verify module's public surface. **Owns "is this presentation still good *right now*"** — both halves: (a) per-session nonce, single-use; (b) **credential validity window — an expired credential must not verify** (see §7.4). | "A mid-size site can adopt this without thinking." |
 | **M5 — dossier** | The refutation page with the live demo embedded. | "The argument survives being written down with citations." |
 
 POC graduates by **rewriting, never shipping** (AGENT_RULES).
@@ -163,12 +163,53 @@ A developer integrates the gate into an existing vanilla-Node/Express site in
 **under 30 minutes using only the README**. Timed with a real run before M4
 closes, not asserted.
 
+### 7.1a Not covered by the M2 matrix: credential expiry (owned by M4, §7.4)
+The §7.1 rows above are all executable and passing as of M2 — **except that none of
+them exercises an expired credential.** M2 made the *x509 chain* clock real; the
+*credential's own* clock is still a frozen constant (`nowStr` in `tools/mkfixture`),
+and the MSO `validFrom`/`validUntil` window is a lexical compare against it. So an
+expired credential is currently refused by nothing we test. Stated here rather than
+left in a comment, because it is a real gap in an age check and the kind of thing
+that quietly never gets done. It is scheduled: **§7.4, M4.**
+
 ### 7.3 Unlinkability — honest split
-- **Tested by us:** two presentations of the same credential yield
-  verifier-side transcripts sharing no common identifier (black-box check).
+- **Tested by us (M2, PASSED):** two presentations of the same credential share no
+  detectable per-credential identifier. The check is a **black-box byte probe** on the
+  proofs: the longest contiguous run shared by two presentations of the *same*
+  credential is compared against two presentations of *different* credentials from the
+  same issuer, with a **planted identifier as a positive control** so the detector is
+  watched catching one before its null result is believed. Measured: same 8 B, different
+  8 B (identical — structure, no excess); planted 16 B control correctly flagged.
+  **Detection floor ≈ 11 bytes** — an 8-byte serial, or an encrypted/non-contiguous
+  identifier, would NOT be caught. ([evidence](../02-evidence/M2-EVIDENCE.md))
 - **Cited, not claimed:** full cryptographic unlinkability rests on the
   scheme's own security analysis (IETF draft + published reviews). The
   dossier says exactly which is which. No overselling.
+
+> Two earlier versions of this check were written and **retracted** — both passed on
+> first run and neither could fail (a verdict-equality tautology; a k-gram metric blind
+> below 16 bytes with a compare-a-blob-to-itself "control"). The evidence log records
+> both. The rule this cost us twice: *a guard you have not watched fire is not a guard.*
+
+### 7.4 Freshness — M4's, both halves
+"Is this presentation still good **right now**" is one question with two halves, and
+M4 owns both. Neither is answerable by the stateless verifier alone.
+
+- **Session freshness (nonce).** A byte-identical proof replayed in its own session is
+  **accepted** today, by design — the verifier has no memory. M2 proved the adjacent
+  half: a proof lifted into a *different* session is refused by cryptography
+  (`stale-nonce`, §7.1). The gate must issue a per-session nonce and retire it after
+  one use. **8een is not replay-safe until M4 and must never be described as such.**
+- **Credential freshness (expiry).** An **expired credential must not verify.** This is
+  untested today (§7.1a): M2 made the x509 chain clock real, but the credential's own
+  clock is a frozen constant, so the MSO `validFrom`/`validUntil` window is never
+  actually exercised. M4 must (a) drive the credential clock from real time, (b) add
+  an `expired-credential` fixture to `tools/mkfixture` — same shape as `stale-nonce` —
+  and (c) assert the refusal in the integration matrix.
+
+Both must fail **closed**, and under the §1 invariant: an expired or stale
+presentation is a real verdict (`ok:true, over_threshold:false`), never a broken
+verifier — and never "you are underage."
 
 ## 8. NO-GO table (discussed and rejected — do not reopen silently)
 

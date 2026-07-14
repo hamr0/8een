@@ -12,7 +12,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
-  <img src="https://img.shields.io/badge/status-M1%20passed%20·%20M2%20next-2a8c4f" alt="status: M1 passed, M2 next">
+  <img src="https://img.shields.io/badge/status-M2%20passed%20·%20M3%20next-2a8c4f" alt="status: M2 passed, M3 next">
   <a href="https://github.com/hamr0/8een/actions/workflows/ci.yml"><img src="https://github.com/hamr0/8een/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <!-- No npm version badge: the only thing on the registry is an inert 0.0.0
        placeholder holding the name. A version badge would advertise it as a
@@ -65,7 +65,11 @@ poc/M0-EVIDENCE.md
 docs/02-evidence/M1-EVIDENCE.md
 ```
 
-The vendored longfellow-zk clone and derived fixtures are gitignored by design; everything needed to re-materialize them is committed (upstream SHA `d8ad8f65`, `poc/patches/0001-zkverify-fake-time.patch`, `poc/make-fixtures.mjs` — regenerates the negative fixtures byte-identically).
+The vendored longfellow-zk clone and every fixture are gitignored by design; everything needed to re-materialize them is committed (upstream SHA `d8ad8f65`, `poc/patches/0001-zkverify-fake-time.patch`).
+
+Since **M2** the integration suite mints its own credentials at run time via `tools/mkfixture` — a valid proof, an underage one, a wrong-issuer one, a tampered one, a proof replayed into another session, a mangled chain, a relabelled claim, and three presentations for the unlinkability check. Running it therefore needs the clone built **with its `install/` prefix** (mkfixture links longfellow via cgo) **and a Go toolchain**; the circuit and trust-list guards need neither and run regardless. No key material or fixture is ever written to the tree (PRD §10).
+
+`poc/make-fixtures.mjs` remains only as part of the **M0** evidence trail — it regenerates the old `post1`-derived fixtures byte-identically. Nothing in the test suite reads them any more: their cert chain expired 2026-05-07, so on the real clock they are refused at chain validation before reaching the layer they were meant to exercise.
 
 ## What's inside
 
@@ -75,9 +79,9 @@ The vendored longfellow-zk clone and derived fixtures are gitignored by design; 
 |---|---|---|
 | **M0** | POC spike: build the core, verify a real proof, reject what must be rejected | **PASSED** — [evidence](poc/M0-EVIDENCE.md) |
 | **M1** | `verify` module: pure verdict, never-throw `{ok, over_threshold, reason}`, full negative matrix | **PASSED** — [evidence](docs/02-evidence/M1-EVIDENCE.md) |
-| **M2** | Full local loop: test-CA (keys generated at runtime, never in the tree), offline fixtures | **in progress** — spike passed ([evidence](docs/02-evidence/M2-EVIDENCE.md)) |
+| **M2** | Full local loop: test-CA (keys generated at runtime, never in the tree), offline fixtures | **PASSED** — [evidence](docs/02-evidence/M2-EVIDENCE.md) |
 | **M3** | Interop with the EU AV app's demo-build proofs | planned |
-| **M4** | HTTP gate + drop-in middleware + demo site (per-session nonce, single-use) | planned |
+| **M4** | HTTP gate + drop-in middleware + demo site. Owns freshness, both halves: per-session single-use nonce, **and** credential expiry (an expired credential must not verify — see PRD §7.4) | planned |
 | **M5** | The dossier: statute → spec → shipped default → working demo | planned |
 
 ### The components (from the PRD)

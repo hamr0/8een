@@ -70,12 +70,22 @@ half-load, and prove it can't.
 
 - **`main` is protected**: feature branch → PR → `gh pr merge --admin`, and only on
   the owner's explicit say-so. Never push to `main`.
-- **The integration suite needs the POC clone** (`poc/M0-EVIDENCE.md` step 1) and
-  takes minutes. It skips cleanly when the clone is absent. `npm test` is the fast
-  gate; `npm run test:integration` is the real one. Do not claim the negative
-  matrix passes without running the latter.
-- **The accept path runs under a pinned verification clock** (`ZKVERIFY_FAKE_TIME`,
-  injected by the test harness only, never in `src/`). The one real proof we have
-  expired 2026-05-07. M2's test-CA removes the scaffolding.
+- **The integration suite needs the POC clone fully built** (`poc/M0-EVIDENCE.md`
+  step 1 — including the `install/` prefix, since it mints fixtures through cgo) **and
+  a Go toolchain**, and takes minutes. It skips cleanly when any of those is absent.
+  `npm test` is the fast gate; `npm run test:integration` is the real one. Do not
+  claim the negative matrix passes without running the latter.
+- **The pinned verification clock is GONE** (M2, 2026-07-14). `ZKVERIFY_FAKE_TIME`
+  is not used anywhere; the suite mints its own credentials via `tools/mkfixture` and
+  runs on the real clock. Do not reintroduce it, and do not reach for upstream's
+  `examples/post1.json` — its chain expired 2026-05-07, so on the real clock every
+  post1-derived fixture is refused at *chain validation* and never reaches the layer
+  you think you are testing. Mint a fixture instead.
+  - **The circuit's own clock is still frozen**: `nowStr` in `mint.go` is a hardcoded
+    20-char timestamp, and the MSO validity window is a lexical string compare
+    against it. Credential expiry is therefore NOT covered by any test. Only the
+    *x509* clock is real. Do not let "M2 runs on the real clock" grow into a claim
+    that it does. **Scheduled: PRD §7.4, owned by M4** (with the nonce — same
+    question, two halves). Named as a gap in the M2 matrix at PRD §7.1a.
 - **Measure before you write a number.** "A few seconds" was wrong by 10× once
   already and had to be retracted in writing.
