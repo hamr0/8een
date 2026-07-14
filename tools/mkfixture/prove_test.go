@@ -117,7 +117,7 @@ func TestGeneratorRefusesFixtureThatDoesNotMatchItsClaim(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bad leaf: %v", err)
 	}
-	if err := assertFixtureVerifies(circuit, m, proof, badLeaf, over18, expectAccept); err == nil {
+	if _, err := assertFixtureVerifies(circuit, m, proof, badLeaf, over18, expectAccept); err == nil {
 		t.Fatal("generator emitted a fixture whose leaf does not carry the MSO-signing key")
 	} else {
 		t.Logf("refused wrong-key leaf: %v", err)
@@ -129,14 +129,14 @@ func TestGeneratorRefusesFixtureThatDoesNotMatchItsClaim(t *testing.T) {
 	}
 
 	// Non-vacuity: the correctly-wired fixture must PASS the same check.
-	if err := assertFixtureVerifies(circuit, m, proof, goodLeaf, over18, expectAccept); err != nil {
+	if _, err := assertFixtureVerifies(circuit, m, proof, goodLeaf, over18, expectAccept); err != nil {
 		t.Fatalf("generator rejected a correctly-wired fixture: %v", err)
 	}
 	t.Log("accepted the correctly-wired fixture")
 
 	// A verifying proof labelled expectReject must be refused — the guard that keeps
 	// an inert byte-flip from shipping as a passing negative fixture.
-	if err := assertFixtureVerifies(circuit, m, proof, goodLeaf, over18, expectReject); err == nil {
+	if _, err := assertFixtureVerifies(circuit, m, proof, goodLeaf, over18, expectReject); err == nil {
 		t.Fatal("generator would have shipped a 'must not verify' fixture whose proof verifies")
 	} else {
 		t.Logf("refused a verifying proof labelled expectReject: %v", err)

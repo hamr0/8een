@@ -1,13 +1,16 @@
 # M2 — test-CA + prover: evidence log
 
 **Date:** 2026-07-14 · **Machine:** Fedora 44, 8 cores · **Go:** 1.26 ·
-**Status: SPIKE PASSED — milestone IN PROGRESS.**
+**Status: PASSED.**
 
-This log opens with the de-risking spike. **M2 is not complete.** What is settled
-is the riskiest assumption; what remains is productionization (see "Still owed").
+This log opens with the de-risking spike that settled the riskiest assumption, and
+closes with the milestone met: the integration suite mints its own credentials,
+runs the full §7.1 negative matrix and the §7.3 unlinkability check, and does it all
+on the real clock — **18/18, 0 skipped**. The `ZKVERIFY_FAKE_TIME` scaffolding that
+M0 and M1 leaned on is gone from the tree.
 
 **Exit criterion (PRD §6):** *"We can generate spec-conformant
-credentials/proofs ourselves."*
+credentials/proofs ourselves."* — **met.**
 
 **Riskiest assumption under test:** can we mint a synthetic ISO 18013-5
 credential under our own test CA that longfellow's own prover **and** verifier
@@ -94,14 +97,29 @@ Observed on one full run against the real static lib:
 
 | Scenario | Minted | Proof | longfellow's ZK verdict |
 |---|---|---|---|
-| `valid` | `age_over_18=true` | 361,108 B | **SUCCESS** |
-| `untrusted-issuer` | `age_over_18=true` | 360,372 B | **SUCCESS** — by design; it is refused at *chain* validation, its CA withheld from the trust PEM |
-| `underage` | `age_over_18=false` | 360,628 B | **SUCCESS** — an honestly-proven minor; the proof is valid, the *claim* is false |
-| `tampered` | `age_over_18=true`, one proof byte flipped | 360,948 B | **REFUSED** (`merkle_check failed`) |
+| `valid` | `age_over_18=true` | 361,300 B | **SUCCESS** |
+| `untrusted-issuer` | `age_over_18=true` | 361,012 B | **SUCCESS** — by design; it is refused at *chain* validation, its CA withheld from the trust PEM |
+| `underage` | `age_over_18=false` | 359,284 B | **SUCCESS** — an honestly-proven minor; the proof is valid, the *claim* is false |
+| `tampered` | `age_over_18=true`, one proof byte flipped | 361,364 B | **REFUSED** — `MDOC_VERIFIER_GENERAL_FAILURE` (code 5) |
+| `stale-nonce` | `age_over_18=true`, proven under session A, presented under session B | 360,820 B | **REFUSED** — `MDOC_VERIFIER_GENERAL_FAILURE` (code 5); the device signature does not match a preimage rebuilt over another session's transcript |
+| `mangled-cert` | `age_over_18=true`, leaf signature byte corrupted | 359,924 B | **SUCCESS** — by design; the ZK proof is sound and the rejection must come from *chain* validation |
+| `unlinkable-a1/a2/b1` | `age_over_18=true` ×3, one issuer, one DS cert | ~360 KB each | **SUCCESS** ×3 — a1/a2 are one credential presented twice; b1 is a *different* credential from the same issuer |
+
+Whole run: **16.2 s** for all nine fixtures including their self-verification —
+against an integration suite whose circuit loads dominate at 45–70 s *per server*.
+Cheap enough that the suite mints fresh fixtures on every run and commits none.
 
 Certificates are issued on the real wall clock (observed window
 `2025-07-14 .. 2027-07-14`), which is what makes the `ZKVERIFY_FAKE_TIME`
 scaffolding removable rather than merely undesirable.
+
+The `stale-nonce` row required splitting **mint** (the issued credential: issuer key,
+device key, salt, signed MSO) from **present** (the device signature over *this
+session's* transcript). Before it, the transcript was a hardcoded 4-byte constant
+baked into the mint, so "the same credential in a different session" was not
+expressible at all — and neither was §7.3, which needs one credential presented
+twice. One refactor, both rows. The device-auth preimage is pinned byte-for-byte by
+`TestDeviceAuthPreimageIsByteExact`, which is what made the refactor safe to do.
 
 Two things the generator **checks rather than assumes**, both instances of this
 repo's silent-partial-load theme:
@@ -119,16 +137,72 @@ repo's silent-partial-load theme:
   on an inert byte fails generation instead of shipping as a negative test that
   silently passes. Both guards are pinned by tests that assert they *fire*.
 
-## Still owed before M2 can be called PASSED
+## The pinned clock is gone — measured 2026-07-14
 
-- Wire the JS integration suite onto these fixtures (the generator emits them; the
-  suite does not yet consume them).
-- The last row of the negative matrix: stale/wrong-nonce (PRD §7.1). The other four
-  — valid, underage, wrong-issuer, tampered — are emitted and self-verified above.
-- Remove `ZKVERIFY_FAKE_TIME` from the integration harness once the suite is on the
-  minted (unexpired) certs.
-- §7.3 unlinkability black-box check: two presentations of the same credential
-  share no verifier-side identifier (requires proving the same credential twice).
+`ZKVERIFY_FAKE_TIME` no longer appears in `src/`, `test/` or `tools/`. The
+integration suite mints its fixtures at setup and runs entirely on the real wall
+clock. **18/18 pass, 0 skipped, 281 s.**
+
+This was the point of the whole test-CA exercise, and it is worth being precise
+about what it bought. Under the pinned clock, *no test in the suite could tell a
+working chain-validator from a broken one* — x509 verification was frozen at a date
+where the one available chain happened to be valid. Now the accept path exercises it
+for real.
+
+**post1.json could not come along, and that was measured, not assumed.** On the real
+clock the service rejects *every* post1-derived fixture at chain validation —
+`ok=true, over=false, issuer_untrusted`, detail `x509: certificate has expired` — the
+valid one and the deliberately-broken ones alike. Nothing reaches the ZK layer. So
+the rows asserting `zk_proof_invalid` would have gone **red**, and the row asserting
+only `ok`/`over_threshold` would have **passed while testing nothing**. Every
+proof-bearing fixture is minted now. (`poc/make-fixtures.mjs` stays: it is cited by
+the M0 evidence record.)
+
+### The negative matrix (PRD §7.1), as it now runs
+
+| Row | Verdict | Reason |
+|---|---|---|
+| valid, trusted issuer | `ok:true`, `over:true` | `verified` — on the real clock |
+| **underage**, honestly proven | `ok:true`, `over:false` | `claim_false` — the proof is *valid*; the answer is still no |
+| issuer off the trust list | `ok:true`, `over:false` | `issuer_untrusted` — refused at the chain, not the ZK layer |
+| tampered proof | `ok:true`, `over:false` | `zk_proof_invalid` |
+| **replayed into another session** | `ok:true`, `over:false` | `zk_proof_invalid` |
+| mangled cert chain | `ok:true`, `over:false` | rejected, not crashed on |
+| garbage bytes | `ok:true`, `over:false` | rejected, not crashed on |
+| malformed argument | `ok:false`, `over:null` | `invalid_request` — a caller bug is not evidence about a person |
+| over-18 proof, site wants over-21 | `ok:true`, `over:false` | `claim_absent` |
+| byte-identical replay | `ok:true`, `over:true` | **accepted, by design** — see below |
+
+The last two rows of that table must be read together, because they look like a
+contradiction and are not. A proof lifted into a **different** session is refused, by
+cryptography — the device signature will not match a preimage rebuilt over another
+transcript. The **same** proof replayed in **its own** session is accepted, because
+the verifier is stateless and has no memory to detect it with. Freshness is the
+gate's job (M4). 8een is not replay-safe and must never be described as such.
+
+### §7.3 unlinkability
+
+Split across the two places each half can be honestly asserted:
+
+- **Structural** (`tools/mkfixture/unlink_test.go`): the verifier-visible envelope is
+  **byte-identical** — 1,193 B — across a1, a2 *and* b1, while the three proofs are
+  pairwise distinct. b1 is the control that gives this meaning: it is a *different*
+  credential from the same issuer, so the equality says the envelope distinguishes
+  nothing at the credential level. a1 is linkable to a2 by exactly as much as it is
+  linkable to b1 — i.e. by the issuer's certificate, and nothing else. Non-vacuity is
+  asserted in the same test: a credential from a *different* issuer does produce a
+  different envelope, so the comparison demonstrably discriminates.
+- **Behavioural** (integration suite): the verifier returns byte-identical verdicts
+  for all three presentations, and the wire bytes of a1/a2 are confirmed non-identical
+  so the result is not a tautology.
+
+The structural half lives in Go because reading it back requires decoding CBOR, and
+8een parses no CBOR itself and will not grow a parser to test itself (NO-GO #8). The
+generator already depends on a CBOR library legitimately, for the wire envelope.
+
+**Not claimed:** that longfellow's *proof bytes* hide every per-credential
+identifier. That is the cryptographic result, and PRD §7.3 scopes it as *cited, not
+claimed* — it rests on the scheme's own security analysis, not on any test we wrote.
 
 ## Honesty notes
 

@@ -12,7 +12,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
-  <img src="https://img.shields.io/badge/status-M1%20passed%20·%20M2%20next-2a8c4f" alt="status: M1 passed, M2 next">
+  <img src="https://img.shields.io/badge/status-M2%20passed%20·%20M3%20next-2a8c4f" alt="status: M2 passed, M3 next">
   <a href="https://github.com/hamr0/8een/actions/workflows/ci.yml"><img src="https://github.com/hamr0/8een/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <!-- No npm version badge: the only thing on the registry is an inert 0.0.0
        placeholder holding the name. A version badge would advertise it as a
@@ -75,7 +75,7 @@ The vendored longfellow-zk clone and derived fixtures are gitignored by design; 
 |---|---|---|
 | **M0** | POC spike: build the core, verify a real proof, reject what must be rejected | **PASSED** — [evidence](poc/M0-EVIDENCE.md) |
 | **M1** | `verify` module: pure verdict, never-throw `{ok, over_threshold, reason}`, full negative matrix | **PASSED** — [evidence](docs/02-evidence/M1-EVIDENCE.md) |
-| **M2** | Full local loop: test-CA (keys generated at runtime, never in the tree), offline fixtures | **in progress** — spike passed ([evidence](docs/02-evidence/M2-EVIDENCE.md)) |
+| **M2** | Full local loop: test-CA (keys generated at runtime, never in the tree), offline fixtures | **PASSED** — [evidence](docs/02-evidence/M2-EVIDENCE.md) |
 | **M3** | Interop with the EU AV app's demo-build proofs | planned |
 | **M4** | HTTP gate + drop-in middleware + demo site (per-session nonce, single-use) | planned |
 | **M5** | The dossier: statute → spec → shipped default → working demo | planned |

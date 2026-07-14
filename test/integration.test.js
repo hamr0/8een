@@ -1,22 +1,34 @@
 /**
  * Drives the real longfellow verifier service. Slow by nature: the circuit load
- * is 44-73s per server and this suite starts seven, so it runs ~4 minutes. The
- * trust-anchor tests use a one-circuit directory (they never verify a proof),
- * which keeps that from becoming ~8.
+ * is 44-73s per server and this suite starts several, so it runs ~4 minutes.
+ * The trust-anchor tests use a one-circuit directory (they never verify a proof),
+ * which keeps that from growing further.
  *
- * Requires the POC clone to be materialized (see poc/M0-EVIDENCE.md step 1).
- * Skips cleanly when it is absent, so a fresh checkout still runs green on the
- * unit suite.
+ * Requires the POC clone to be materialized (see poc/M0-EVIDENCE.md step 1) and a
+ * Go toolchain with cgo, because the proof fixtures are MINTED at setup by
+ * tools/mkfixture rather than committed. Skips cleanly when either is absent, so a
+ * fresh checkout still runs green on the unit suite.
  *
- * HONESTY NOTE, stated plainly rather than buried:
- * The only real proof we have (upstream's examples/post1.json) carries a cert
- * chain that expired 2026-05-07. Exercising the ACCEPT path therefore requires
- * pinning the verification clock, via upstream's patched build and
- * ZKVERIFY_FAKE_TIME. That switch lives here, in the test harness, injected as
- * an env option -- it is not referenced anywhere in 8een's own code and never
- * ships. A natively-valid credential arrives at M2 with the test-CA, and this
- * scaffolding goes away. Every REJECT path below runs on the real clock or is
- * clock-independent.
+ * THE PINNED CLOCK IS GONE (M2).
+ * Every earlier cut of this file ran the accept path under ZKVERIFY_FAKE_TIME,
+ * because the only real proof we had -- upstream's examples/post1.json -- carried a
+ * cert chain that expired 2026-05-07, and a verifier asked to accept it on the real
+ * clock would rightly refuse. That pin was scaffolding, and it was load-bearing in a
+ * way that made the whole suite quietly weaker: with the clock frozen, no test here
+ * could tell a working chain-validator from a broken one.
+ *
+ * The M2 test-CA removes it. Fixtures are minted at run time under a CA whose
+ * validity window straddles the real wall clock, so they verify natively. There is
+ * no ZKVERIFY_FAKE_TIME in this file, in src/, or anywhere else in the tree.
+ *
+ * post1.json could not come with us, and this was measured rather than assumed. On
+ * the real clock the service rejects EVERY post1-derived fixture at chain
+ * validation -- ok=true, over=false, issuer_untrusted, "x509: certificate has
+ * expired" -- the valid one and the deliberately-broken ones alike. Nothing reaches
+ * the ZK layer. So the rows that assert ZK_PROOF_INVALID would have gone red, and
+ * the row that asserted only ok/over would have passed while testing nothing at all.
+ * Either way post1 can no longer exercise what it was there to exercise, and every
+ * proof-bearing fixture below is minted instead.
  */
 
 import test from 'node:test';
@@ -30,13 +42,15 @@ import { Verifier, VerifierService, REASONS } from '../src/index.js';
 const POC = new URL('../poc/longfellow-zk/', import.meta.url).pathname;
 const SERVER_DIR = join(POC, 'reference/verifier-service/server');
 const UPSTREAM_CERTS = join(SERVER_DIR, 'certs.pem');
+const CIRCUIT_SOURCE = join(POC, 'lib/circuits/mdoc/circuits');
+const MKFIXTURE_DIR = new URL('../tools/mkfixture/', import.meta.url).pathname;
 
 /**
  * Upstream's own certs.pem is malformed: at line 142 an "-----END CERTIFICATE-----"
  * and the next "-----BEGIN CERTIFICATE-----" share a line, which stops Go's
  * pem.Decode dead -- 19 certificates in the file, 17 loaded, no error reported.
  * 8een refuses to run on a silently-truncated trust list (see the test below), so
- * the rest of the suite needs a well-formed bundle. Repairing that one boundary
+ * the trust-anchor tests need a well-formed bundle. Repairing that one boundary
  * loads all 19; verified.
  */
 function wellFormedTrustList() {
@@ -51,22 +65,71 @@ function wellFormedTrustList() {
   return out;
 }
 
-const CIRCUIT_SOURCE = join(POC, 'lib/circuits/mdoc/circuits');
+function haveGo() {
+  try {
+    execFileSync('go', ['version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Mint the proof fixtures. They are NOT committed, for two reasons that both matter:
+ * the certs would expire and hand us back the very problem the test-CA just solved,
+ * and PRD §10 forbids key material in the tree.
+ *
+ * mkfixture verifies every fixture it emits against longfellow itself before writing
+ * it -- a "tampered" proof whose byte-flip landed somewhere inert fails GENERATION
+ * rather than shipping as a negative test that silently passes. So a failure here is
+ * a real failure and must be loud: we deliberately do NOT catch it and skip. A
+ * fixture generator that quietly produces nothing, leaving a green suite behind, is
+ * this project's signature bug wearing a lab coat.
+ *
+ * Measured: ~16s for all nine fixtures, against a suite whose circuit loads dominate
+ * at 45-70s per server.
+ */
+function mintFixtures() {
+  const dir = mkdtempSync(join(tmpdir(), '8een-fixtures-'));
+  const binary = join(dir, 'mkfixture');
+  execFileSync('go', ['build', '-o', binary, '.'], {
+    cwd: MKFIXTURE_DIR,
+    env: { ...process.env, CGO_ENABLED: '1' },
+    stdio: 'pipe',
+  });
+  execFileSync(binary, ['-circuit-dir', CIRCUIT_SOURCE, '-out', dir], { stdio: 'pipe' });
+  return dir;
+}
+
+const pocPresent = existsSync(join(SERVER_DIR, 'server')) && existsSync(CIRCUIT_SOURCE);
+const skipReason = !pocPresent
+  ? 'POC clone not materialized (see poc/M0-EVIDENCE.md)'
+  : !haveGo()
+    ? 'Go toolchain absent -- needed to mint the M2 fixtures'
+    : false;
+
+// Minted once for the whole file. If this throws, the suite fails: see mintFixtures.
+const FIXTURES = skipReason ? null : mintFixtures();
+
+const suite = { skip: skipReason };
 
 const RIG = {
   binary: join(SERVER_DIR, 'server'),
   circuitDir: CIRCUIT_SOURCE,
-  caCerts: wellFormedTrustList(),
-  // vicalUrl is deliberately NOT set: the suite exercises 8een's real default,
-  // which fetches no trust list at all. Trust here is exactly the PEM bundle.
+  // The trust boundary for every proof below is the minted CA bundle, and nothing
+  // else. vicalUrl is deliberately NOT set: the suite exercises 8een's real default,
+  // which fetches no trust list at all.
+  caCerts: FIXTURES ? join(FIXTURES, 'caCerts.pem') : UPSTREAM_CERTS,
 };
 
+/** The trust-anchor tests assert on what the verifier TRUSTS; they verify no proof. */
+const TRUST_RIG = { ...RIG, caCerts: wellFormedTrustList() };
+
 /**
- * A directory holding exactly ONE circuit. The trust-anchor tests below never
- * verify a proof -- they assert on what the verifier trusts -- so they do not
- * need all 17 circuits, and loading one takes ~4s instead of ~45-70s. The
- * all-expected-circuits-loaded guard is still satisfied (1 present, 1 loaded), so
- * this shortens the suite without weakening what it checks.
+ * A directory holding exactly ONE circuit. The trust-anchor tests never verify a
+ * proof, so they do not need all 17 circuits, and loading one takes ~4s instead of
+ * ~45-70s. The all-expected-circuits-loaded guard is still satisfied (1 present, 1
+ * loaded), so this shortens the suite without weakening what it checks.
  */
 function oneCircuitDir() {
   if (!existsSync(CIRCUIT_SOURCE)) return CIRCUIT_SOURCE;
@@ -75,24 +138,22 @@ function oneCircuitDir() {
   writeFileSync(join(dir, first), readFileSync(join(CIRCUIT_SOURCE, first)));
   return dir;
 }
-const PINNED_CLOCK = { ZKVERIFY_FAKE_TIME: '2026-04-01T00:00:00Z' };
-
-const available = existsSync(RIG.binary) && existsSync(RIG.circuitDir);
-const suite = { skip: available ? false : 'POC clone not materialized (see poc/M0-EVIDENCE.md)' };
 
 /** Fixtures are stored as the service's own wire format: base64 in JSON. */
-function proof(path) {
-  const j = JSON.parse(readFileSync(path, 'utf8'));
+function proof(name) {
+  const j = JSON.parse(readFileSync(join(FIXTURES, `${name}.json`), 'utf8'));
   return {
     transcript: Buffer.from(j.Transcript, 'base64'),
     deviceResponse: Buffer.from(j.ZKDeviceResponseCBOR, 'base64'),
   };
 }
 
-const VALID = () => proof(join(SERVER_DIR, 'examples/post1.json'));
-const TAMPERED = () => proof(new URL('../poc/post1-tampered.json', import.meta.url).pathname);
-const WRONG_TRANSCRIPT = () => proof(new URL('../poc/post1-wrong-transcript.json', import.meta.url).pathname);
-const MANGLED_CERT = () => proof(new URL('../poc/probe-flip-tail.json', import.meta.url).pathname);
+const VALID = () => proof('valid');
+const UNDERAGE = () => proof('underage');
+const UNTRUSTED_ISSUER = () => proof('untrusted-issuer');
+const TAMPERED = () => proof('tampered');
+const STALE_NONCE = () => proof('stale-nonce');
+const MANGLED_CERT = () => proof('mangled-cert');
 
 // The zero-circuit trap. A server pointed at an empty directory reports
 // /healthz "ok", advertises 12 specs it does not have, and rejects every valid
@@ -101,7 +162,7 @@ const MANGLED_CERT = () => proof(new URL('../poc/probe-flip-tail.json', import.m
 test('refuses to start when no circuits loaded, rather than serve confident nonsense', suite, async () => {
   const empty = mkdtempSync(join(tmpdir(), '8een-nocircuits-'));
   await assert.rejects(
-    Verifier.start({ ...RIG, circuitDir: empty, port: 8911, startupTimeoutMs: 15_000, env: PINNED_CLOCK }),
+    Verifier.start({ ...RIG, circuitDir: empty, port: 8911, startupTimeoutMs: 15_000 }),
     /0 circuit files/,
     'a verifier with no circuits must not come up',
   );
@@ -115,12 +176,11 @@ test('refuses to start when no circuits loaded, rather than serve confident nons
 // would then be rejected for reasons having nothing to do with the holder.
 test('refuses to start when only SOME circuits load', suite, async () => {
   const dir = mkdtempSync(join(tmpdir(), '8een-partial-'));
-  const source = new URL('../poc/longfellow-zk/lib/circuits/mdoc/circuits/', import.meta.url).pathname;
-  const names = readdirSync(source).filter((f) => /^[0-9a-f]{64}$/.test(f));
+  const names = readdirSync(CIRCUIT_SOURCE).filter((f) => /^[0-9a-f]{64}$/.test(f));
 
   for (const [i, name] of names.entries()) {
     // Corrupt 5 of them. Upstream will skip these and start anyway.
-    writeFileSync(join(dir, name), i < 5 ? 'corrupted' : readFileSync(join(source, name)));
+    writeFileSync(join(dir, name), i < 5 ? 'corrupted' : readFileSync(join(CIRCUIT_SOURCE, name)));
   }
 
   // Not an exact count: we abort at the FIRST rejected file rather than sit
@@ -128,7 +188,7 @@ test('refuses to start when only SOME circuits load', suite, async () => {
   // skips have been logged by that instant is a race, and asserting on it would
   // be asserting on the scheduler.
   await assert.rejects(
-    Verifier.start({ ...RIG, circuitDir: dir, port: 8915, env: PINNED_CLOCK }),
+    Verifier.start({ ...RIG, circuitDir: dir, port: 8915 }),
     /rejected at least \d+ of 17 circuit files as not matching their circuit id/,
     'a half-loaded verifier reports healthy and rejects real proofs -- it must not come up',
   );
@@ -146,7 +206,7 @@ test('refuses a trust list that silently truncated', suite, async () => {
   assert.equal(present, 19, 'upstream ships 19 certificates');
 
   await assert.rejects(
-    Verifier.start({ ...RIG, circuitDir: oneCircuitDir(), caCerts: UPSTREAM_CERTS, port: 8918, env: PINNED_CLOCK }),
+    Verifier.start({ ...TRUST_RIG, circuitDir: oneCircuitDir(), caCerts: UPSTREAM_CERTS, port: 8918 }),
     /trust list silently truncated.*19 certificates but the verifier loaded only 17/s,
     'two issuer CAs vanishing without a word must not be survivable',
   );
@@ -162,7 +222,7 @@ test('refuses to start when it trusts nobody', suite, async () => {
   writeFileSync(empty, '# a trust list with no certificates in it\n');
 
   await assert.rejects(
-    Verifier.start({ ...RIG, circuitDir: oneCircuitDir(), caCerts: empty, port: 8916, env: PINNED_CLOCK }),
+    Verifier.start({ ...TRUST_RIG, circuitDir: oneCircuitDir(), caCerts: empty, port: 8916 }),
     /trusts 0 issuer certificates/,
     'a verifier with no trust anchors must not come up',
   );
@@ -173,7 +233,7 @@ test('refuses to start when it trusts nobody', suite, async () => {
 // boundary by accident -- and must verify, from the child's own log, that it did
 // not get one.
 test('does not silently acquire trust anchors over the network', suite, async (t) => {
-  const service = new VerifierService({ ...RIG, circuitDir: oneCircuitDir(), port: 8917, env: PINNED_CLOCK });
+  const service = new VerifierService({ ...TRUST_RIG, circuitDir: oneCircuitDir(), port: 8917 });
   await service.start();
   t.after(() => service.stop());
 
@@ -182,11 +242,14 @@ test('does not silently acquire trust anchors over the network', suite, async (t
   t.diagnostic(`trust anchors: ${JSON.stringify(service.trustAnchors)}`);
 });
 
+// The owner's primary success criterion (PRD §7.1). The strongest form of it: the
+// SAME BYTES, accepted or refused on the trust list alone. Not two different proofs
+// that happen to land differently -- one proof, two verifiers.
 test('trust discrimination: the same proof passes or fails on the trust list alone', suite, async (t) => {
   t.diagnostic('two servers, ~45s each -- circuit load dominates');
 
-  // A real CA, generated at runtime, that simply is not this credential's
-  // issuer. Never enters the tree (PRD §10: no key material, no exemption).
+  // A real CA, generated at runtime, that simply is not this credential's issuer.
+  // Never enters the tree (PRD §10: no key material, no exemption).
   const dir = mkdtempSync(join(tmpdir(), '8een-stranger-ca-'));
   const strangerCa = join(dir, 'stranger.pem');
   execFileSync('openssl', [
@@ -195,18 +258,18 @@ test('trust discrimination: the same proof passes or fails on the trust list alo
     '-days', '30', '-subj', '/CN=Not The Issuer/O=8een test',
   ], { stdio: 'ignore' });
 
-  const trusted = await Verifier.start({ ...RIG, port: 8912, env: PINNED_CLOCK });
+  const trusted = await Verifier.start({ ...RIG, port: 8912 });
   t.after(() => trusted.stop());
   const accepted = await trusted.check(VALID());
 
-  const stranger = await Verifier.start({ ...RIG, caCerts: strangerCa, port: 8913, env: PINNED_CLOCK });
+  const stranger = await Verifier.start({ ...RIG, caCerts: strangerCa, port: 8913 });
   t.after(() => stranger.stop());
   const rejected = await stranger.check(VALID());
 
   assert.deepEqual(
     { ok: accepted.ok, over: accepted.over_threshold, reason: accepted.reason },
     { ok: true, over: true, reason: REASONS.VERIFIED },
-    'issuer on the trust list: accept',
+    'issuer on the trust list: accept -- on the REAL clock, with no ZKVERIFY_FAKE_TIME',
   );
   assert.equal(rejected.over_threshold, false, 'issuer NOT on the trust list: the very same bytes must fail');
   assert.equal(rejected.ok, true, 'and that is a real answer, not a breakage');
@@ -216,7 +279,7 @@ test('trust discrimination: the same proof passes or fails on the trust list alo
 test('the negative matrix (PRD §7.1)', suite, async (t) => {
   // One loaded service, two thresholds on top of it -- both via the public
   // surface, so the suite never reaches into internals to make a point.
-  const service = new VerifierService({ ...RIG, port: 8914, env: PINNED_CLOCK });
+  const service = new VerifierService({ ...RIG, port: 8914 });
   await service.start();
   t.after(() => service.stop());
 
@@ -229,24 +292,57 @@ test('the negative matrix (PRD §7.1)', suite, async (t) => {
     const r = await v.check(VALID());
     assert.equal(r.ok, true);
     assert.equal(r.over_threshold, true);
+    assert.equal(r.reason, REASONS.VERIFIED);
+  });
+
+  // The row that only became testable at M2: an HONEST proof of a FALSE claim.
+  // The proof is valid -- Status:true -- and the answer is still no. A consumer
+  // reading Status alone accepts a validly-proven minor, which is the whole reason
+  // over-18 is (Status==true AND claim==true) and never Status by itself.
+  await t.test('an underage holder is refused, though the proof is perfectly valid', async () => {
+    const r = await v.check(UNDERAGE());
+    assert.equal(r.ok, true, 'this IS an answer -- the proof verified');
+    assert.equal(r.over_threshold, false);
+    assert.equal(r.reason, REASONS.CLAIM_FALSE, 'refused for what it says, not because verification broke');
+  });
+
+  await t.test('a proof from an issuer off the trust list is rejected', async () => {
+    const r = await v.check(UNTRUSTED_ISSUER());
+    assert.equal(r.ok, true);
+    assert.equal(r.over_threshold, false);
+    assert.equal(r.reason, REASONS.ISSUER_UNTRUSTED, 'refused at the chain, not at the ZK layer');
   });
 
   await t.test('a tampered proof is rejected', async () => {
     const r = await v.check(TAMPERED());
-    assert.equal(r.over_threshold, false);
-    assert.equal(r.reason, REASONS.ZK_PROOF_INVALID);
-  });
-
-  await t.test('a proof bound to a different transcript is rejected', async () => {
-    const r = await v.check(WRONG_TRANSCRIPT());
-    assert.equal(r.over_threshold, false);
-    assert.equal(r.reason, REASONS.ZK_PROOF_INVALID);
-  });
-
-  await t.test('a proof with a mangled cert chain is rejected', async () => {
-    const r = await v.check(MANGLED_CERT());
-    assert.equal(r.over_threshold, false);
     assert.equal(r.ok, true);
+    assert.equal(r.over_threshold, false);
+    assert.equal(r.reason, REASONS.ZK_PROOF_INVALID);
+  });
+
+  // PRD §7.1's "a replayed proof (wrong/stale nonce)". A GOOD proof of a GOOD
+  // credential from a TRUSTED issuer -- lifted out of the session it was bound to
+  // and replayed into another one. The device signature is what catches it.
+  //
+  // Read alongside the byte-identical-replay test at the bottom of this file: that
+  // one is accepted, this one is refused, and the difference is the whole of what
+  // the verifier can and cannot do about replay. Cross-session lifting: caught here,
+  // by cryptography. Same-session repetition: not caught, by design -- the verifier
+  // is stateless and freshness belongs to the gate (M4).
+  await t.test('a proof replayed into a different session is rejected', async () => {
+    const r = await v.check(STALE_NONCE());
+    assert.equal(r.ok, true, 'this is a verdict about the proof, not a breakage');
+    assert.equal(r.over_threshold, false);
+    assert.equal(r.reason, REASONS.ZK_PROOF_INVALID);
+  });
+
+  // A corrupted signature on an otherwise well-formed cert. The ZK proof inside is
+  // valid -- mkfixture asserts that before emitting it -- so a pass here would mean
+  // the chain was never checked at all.
+  await t.test('a proof with a mangled cert chain is rejected, not crashed on', async () => {
+    const r = await v.check(MANGLED_CERT());
+    assert.equal(r.ok, true);
+    assert.equal(r.over_threshold, false);
   });
 
   await t.test('garbage is rejected, not crashed on', async () => {
@@ -278,10 +374,67 @@ test('the negative matrix (PRD §7.1)', suite, async (t) => {
 
   // The stateless-verifier fact, asserted as a test so it cannot quietly change:
   // the same proof verifies again, forever. Freshness is the gate's job (M4).
+  //
+  // This is NOT a failing expectation and must not be "fixed". Compare the
+  // stale-nonce test above: a proof moved to a DIFFERENT session is refused. What is
+  // accepted here is the identical proof in its OWN session, twice.
   await t.test('DOCUMENTS THE GAP: a byte-identical replay is accepted', async () => {
     const first = await v.check(VALID());
     const second = await v.check(VALID());
     assert.equal(first.over_threshold, true);
     assert.equal(second.over_threshold, true, 'the verifier has no memory -- by design');
   });
+});
+
+/**
+ * PRD §7.3, the half that is TESTED BY US: two presentations of the same credential
+ * must give the verifier nothing to link them by.
+ *
+ * a1 and a2 are the same credential shown twice, under different session nonces.
+ * b1 is a DIFFERENT credential from the same issuer, and it is the control: it is
+ * what stops this test being satisfied trivially. Whatever a1 and a2 have in common,
+ * b1 must have too -- otherwise that commonality identifies a holder rather than an
+ * issuer, and the presentations are linkable.
+ *
+ * The byte-level form of that claim (the verifier-visible envelope is IDENTICAL
+ * across all three) is asserted in tools/mkfixture/unlink_test.go, where the CBOR
+ * library already lives -- 8een itself parses no CBOR, and will not grow a parser to
+ * test itself (NO-GO #8). What is asserted HERE is the black-box behaviour through
+ * the public API: the verifier's answers are indistinguishable.
+ *
+ * NOT claimed, in either place: that longfellow's proof bytes hide every
+ * per-credential identifier. That is the cryptographic result, and PRD §7.3 scopes it
+ * as cited, not claimed -- it rests on the scheme's security analysis, not on us.
+ */
+test('unlinkability: two presentations of one credential are indistinguishable (PRD §7.3)', suite, async (t) => {
+  const service = new VerifierService({ ...RIG, port: 8919 });
+  await service.start();
+  t.after(() => service.stop());
+
+  const v = new Verifier(service, 'age_over_18');
+
+  const a1 = await v.check(proof('unlinkable-a1'));
+  const a2 = await v.check(proof('unlinkable-a2'));
+  const b1 = await v.check(proof('unlinkable-b1'));
+
+  // An unlinkability claim over proofs that do not verify would be worthless.
+  for (const [name, r] of [['a1', a1], ['a2', a2], ['b1', b1]]) {
+    assert.equal(r.ok, true, `${name} must verify`);
+    assert.equal(r.over_threshold, true, `${name} must verify`);
+  }
+
+  // The verdict for two presentations of the SAME credential is identical to the
+  // verdict for a DIFFERENT credential from the same issuer. The verifier's answer
+  // therefore carries nothing that could link a1 to a2.
+  assert.deepEqual(a1, a2, 'two presentations of one credential must be indistinguishable to the verifier');
+  assert.deepEqual(a1, b1, 'and no more alike than two presentations of DIFFERENT credentials');
+
+  // Non-vacuity: the presentations really were different bytes on the wire. Had they
+  // been identical, "indistinguishable verdicts" would be a tautology rather than a
+  // finding.
+  const wireA1 = readFileSync(join(FIXTURES, 'unlinkable-a1.json'), 'utf8');
+  const wireA2 = readFileSync(join(FIXTURES, 'unlinkable-a2.json'), 'utf8');
+  assert.notEqual(wireA1, wireA2, 'the two presentations must not be byte-identical, or this proves nothing');
+
+  t.diagnostic(`identical verdicts across 3 presentations: ${JSON.stringify(a1)}`);
 });

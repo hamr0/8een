@@ -54,9 +54,9 @@ CGO_ENABLED=1 go build -o mkfixture .
 
 ## What it emits
 
-Four fixtures plus a trust PEM. The over-18 verdict a consumer must compute is
-**`Status==true AND claim==true`** — neither field alone is sufficient, and the
-last two fixtures exist to prove that.
+Nine fixtures plus a trust PEM, in ~16 s. The over-18 verdict a consumer must compute
+is **`Status==true AND claim==true`** — neither field alone is sufficient, and
+`underage` and `tampered` exist to prove exactly that.
 
 | file | scenario | expected service response |
 |------|----------|---------------------------|
@@ -64,20 +64,42 @@ last two fixtures exist to prove that.
 | `untrusted-issuer.json` | same proof, DS chains to a CA **not** in the PEM | **400** cert-chain failure → **ISSUER_UNTRUSTED**, rejected **pre-ZK** |
 | `underage.json` | age_over_18=**false**, honestly proven, trusted CA | **200** `Status:true`, claim `9A==` (0xF4=false) → **NOT over-18** (proof valid *for a false claim*; read the claim) |
 | `tampered.json` | valid over-18 proof, one byte flipped, trusted CA | **200** `Status:false` + `return code 5`, `Claims` still echoes `9Q==` → **ZK_PROOF_INVALID** (when `Status:false` the echo is unverified noise — discard it) |
-| `caCerts.pem` | the 3 CAs of valid/underage/tampered; untrusted-issuer's CA is deliberately absent | the trust boundary — same bytes, different PEM, is the discrimination test |
+| `stale-nonce.json` | valid over-18 proof, **proven under session A, presented under session B** | **200** `Status:false` + `return code 5` → **ZK_PROOF_INVALID**. The device signature is taken over a preimage containing the transcript; rebuild it over a different one and it no longer matches |
+| `mangled-cert.json` | valid over-18 proof, trusted CA, **leaf signature byte corrupted** | **400** cert-chain failure → rejected at the chain. The cert still *parses*, so the failure lands on validation rather than on a DER parse error |
+| `unlinkable-a1/a2.json` | the **same** credential presented twice, different session nonces | **200** ACCEPT ×2, with identical verdicts |
+| `unlinkable-b1.json` | a **different** credential from the **same issuer** (same CA, same DS cert) | **200** ACCEPT — the control for §7.3: it is what proves the envelope identifies the *issuer*, not the holder |
+| `caCerts.pem` | the CAs of every fixture above **except** `untrusted-issuer`, whose CA is deliberately withheld | the trust boundary — same bytes, different PEM, is the discrimination test |
 
-`untrusted-issuer` fails at chain validation (**400 + parse-error JSON**), a shape
-**distinct** from a ZK rejection (**200 + `Status:false` + return code 5**); 8een's
-reason mapping must keep `ISSUER_UNTRUSTED` and `ZK_PROOF_INVALID` apart.
+`untrusted-issuer` and `mangled-cert` fail at chain validation (**400 + error JSON**),
+a shape **distinct** from a ZK rejection (**200 + `Status:false` + return code 5**);
+8een's reason mapping must keep `ISSUER_UNTRUSTED` and `ZK_PROOF_INVALID` apart.
 
-## Real-clock validity (why `ZKVERIFY_FAKE_TIME` can be dropped)
+Every fixture is **verified against longfellow before it is written** — see
+`assertFixtureVerifies`. A "tampered" proof whose byte-flip landed on an inert byte,
+or a mangled cert whose corruption left the signature valid, fails *generation*
+rather than shipping as a negative test that silently passes.
+
+## Real-clock validity (why `ZKVERIFY_FAKE_TIME` is gone)
 
 The test CA + leaf carry a validity window relative to the **real wall clock**
-(`now-1yr .. now+1yr`), so the x509 chain verifies natively — no
-`ZKVERIFY_FAKE_TIME` needed for the ACCEPT path. That pin was M0/M1 scaffolding
-for the one upstream fixture whose chain expired 2026-05-07; these fixtures remove
-the need for it. (This x509 clock is separate from the circuit's own `now`/MSO
-validity, which is a lexical 20-char string compare — see `mint.go`.)
+(`now-1yr .. now+1yr`), so the x509 chain verifies natively. That pin was M0/M1
+scaffolding for the one upstream fixture whose chain expired 2026-05-07; **as of M2
+the integration suite mints these fixtures at setup and runs entirely on the real
+clock**, and `ZKVERIFY_FAKE_TIME` appears nowhere in `src/`, `test/` or `tools/`.
+(This x509 clock is separate from the circuit's own `now`/MSO validity, which is a
+lexical 20-char string compare — see `mint.go`.)
+
+## Mint vs. present
+
+`Mint`/`MintCredential` issues a credential (issuer key, device key, salt, signed
+MSO). `Credential.Present(transcript)` shows it in **one session**, signing the
+device-auth preimage over that session's transcript. Two presentations of one
+credential differ only in the transcript and the device signature over it.
+
+The split is not decoration: `stale-nonce` needs to prove under one transcript and
+present under another, and §7.3 needs the *same* credential presented twice. Calling
+`Mint` twice cannot express either — it re-rolls the device key and salt, producing a
+different credential.
 
 ## Tests
 

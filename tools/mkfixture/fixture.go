@@ -223,13 +223,18 @@ const (
 //  2. longfellow actually reaches the expected verdict on these exact bytes. In
 //     particular a "tampered" fixture whose byte-flip landed somewhere inert would
 //     otherwise ship as a negative test that silently passes.
-func assertFixtureVerifies(circuit []byte, m *MintResult, proof []byte, leaf *x509.Certificate, requested []byte, want expectation) error {
+//
+// It returns longfellow's own verdict name, so a rejecting scenario can REPORT the
+// reason it was refused rather than merely that it was. "Rejected" alone would let
+// a fixture pass this guard for a reason that has nothing to do with what it claims
+// to test.
+func assertFixtureVerifies(circuit []byte, m *MintResult, proof []byte, leaf *x509.Certificate, requested []byte, want expectation) (string, error) {
 	leafPub, ok := leaf.PublicKey.(*ecdsa.PublicKey)
 	if !ok {
-		return fmt.Errorf("leaf public key is %T, want *ecdsa.PublicKey", leaf.PublicKey)
+		return "", fmt.Errorf("leaf public key is %T, want *ecdsa.PublicKey", leaf.PublicKey)
 	}
 	if !leafPub.Equal(&m.IssuerKey.PublicKey) {
-		return fmt.Errorf(
+		return "", fmt.Errorf(
 			"leaf cert does not carry the MSO-signing key: the chain would validate, " +
 				"the service would extract the WRONG (pkx,pky), and every proof would fail with a valid chain")
 	}
@@ -238,33 +243,89 @@ func assertFixtureVerifies(circuit []byte, m *MintResult, proof []byte, leaf *x5
 	switch want {
 	case expectAccept:
 		if vCode != 0 {
-			return fmt.Errorf("proof must verify, but longfellow rejected it: %s", vName)
+			return vName, fmt.Errorf("proof must verify, but longfellow rejected it: %s", vName)
 		}
 	case expectReject:
 		if vCode == 0 {
-			return fmt.Errorf("proof must NOT verify, but longfellow ACCEPTED it — this negative fixture would silently pass")
+			return vName, fmt.Errorf("proof must NOT verify, but longfellow ACCEPTED it — this negative fixture would silently pass")
 		}
 	}
-	return nil
+	return vName, nil
 }
 
-// scenario mints a credential with a given age_over_18 value, produces a real
-// proof (requesting that same value), wraps it in a fresh CA+leaf chain,
-// optionally tampers the proof, and then VERIFIES the result against `want` before
-// handing it back. Returns the fixture JSON and the CA DER (for the trust PEM).
-// credValue is both the minted elementValue AND the requested attribute value;
-// wireValue is only what the wire envelope claims.
-func scenario(circuit []byte, name string, credValue, wireValue []byte, tamper bool, want expectation) (fixture, caDER []byte, err error) {
-	m, err := Mint(credValue)
+// mangleLeaf flips the last byte of a leaf cert's DER, which lands inside the
+// ECDSA signatureValue: the ASN.1 lengths are untouched, so the certificate still
+// PARSES and the failure lands where we want it — chain validation — rather than
+// on a DER parse error that would exercise nothing.
+//
+// It then proves the mangle actually broke the chain. A byte-flip that left the
+// signature verifiable would ship as a negative fixture that silently passes,
+// which is the same vacuous-guard trap assertFixtureVerifies exists to close.
+// Chain validation here is stdlib x509 over OUR OWN test fixture — it is not a
+// reimplementation of longfellow's chain validation (NO-GO #8), which remains the
+// service's job and is exactly what this fixture is built to exercise.
+func mangleLeaf(leaf, ca *x509.Certificate) (*x509.Certificate, error) {
+	der := append([]byte{}, leaf.Raw...)
+	der[len(der)-1] ^= 0xFF
+
+	mangled, err := x509.ParseCertificate(der)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: mint: %w", name, err)
+		// Structurally broken rather than signature-broken: still a valid negative
+		// (the service rejects it), but not the one this scenario claims to be.
+		return nil, fmt.Errorf("mangled leaf no longer parses (%w) — wanted a parseable cert with a bad signature", err)
 	}
-	proof, pName, pCode := RunProver(circuit, m, credValue)
-	if pCode != 0 {
-		return nil, nil, fmt.Errorf("%s: prover failed: %s", name, pName)
+	if err := mangled.CheckSignatureFrom(ca); err == nil {
+		return nil, fmt.Errorf(
+			"the byte-flip left the leaf signature VALID — this fixture would chain successfully and the mangled-chain test would silently pass")
+	}
+	return mangled, nil
+}
+
+// scenarioOpts describes one fixture. Each deviation from the happy path is named
+// rather than passed as a positional bool, because they compose: a scenario can be
+// under-age AND stale-nonced, and `scenario(c, n, v, w, false, true, false, ...)`
+// is unreadable at the call site.
+type scenarioOpts struct {
+	name string
+
+	// credValue is BOTH the minted elementValue and the requested attribute value.
+	// wireValue is only what the wire envelope claims (a mismatch is how the
+	// lying-echo trap is expressed).
+	credValue []byte
+	wireValue []byte
+
+	tamperProof bool // flip a byte in the proof -> ZK math fails
+	staleNonce  bool // prove under transcript A, present under B -> device-sig fails
+	mangleCert  bool // corrupt the leaf signature -> chain validation fails
+
+	// want is the ZK-layer verdict ONLY (see the expectation doc comment).
+	want expectation
+}
+
+// scenario mints a credential, presents it under a fresh session nonce, produces a
+// real proof, wraps it in a fresh CA+leaf chain, applies whichever deviation the
+// scenario calls for, and then VERIFIES the result against `want` before handing it
+// back. Returns the fixture JSON and the CA DER (for the trust PEM).
+func scenario(circuit []byte, o scenarioOpts) (fixture, caDER []byte, err error) {
+	cred, err := MintCredential(o.credValue)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: mint: %w", o.name, err)
+	}
+	transcript, err := newSessionTranscript()
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", o.name, err)
+	}
+	m, err := cred.Present(transcript)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: present: %w", o.name, err)
 	}
 
-	if tamper {
+	proof, pName, pCode := RunProver(circuit, m, o.credValue)
+	if pCode != 0 {
+		return nil, nil, fmt.Errorf("%s: prover failed: %s", o.name, pName)
+	}
+
+	if o.tamperProof {
 		// Flip one byte deep in the proof body (avoid the very start/end framing).
 		// assertFixtureVerifies below is what guarantees the flip actually broke the
 		// proof rather than landing on an inert byte.
@@ -272,37 +333,158 @@ func scenario(circuit []byte, name string, credValue, wireValue []byte, tamper b
 		proof[i] ^= 0xFF
 	}
 
+	// The stale/wrong-nonce negative (PRD §7.1 "a replayed proof (wrong/stale
+	// nonce)"). The proof above is bound to `transcript`; we now SHIP a different
+	// one. The verifier recomputes the device-auth preimage over the transcript it
+	// was handed, which is no longer the one the device signed, so the device
+	// signature fails.
+	//
+	// Everything downstream — the assertion included — runs on `m`, so the bytes we
+	// prove reject are exactly the bytes we write. Asserting against the original
+	// transcript would be checking a message nobody sends.
+	if o.staleNonce {
+		stale, err := newSessionTranscript()
+		if err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", o.name, err)
+		}
+		if bytes.Equal(stale, m.Transcript) {
+			return nil, nil, fmt.Errorf("%s: stale nonce equals the fresh one", o.name)
+		}
+		m.Transcript = stale
+	}
+
 	// One window, shared by the CA, the leaf, and the log line below, so all three
 	// describe the same validity period.
 	nb, na := certWindow()
 	ca, caKey, err := makeCA("8een M2 Test Issuer CA", nb, na)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: CA: %w", name, err)
+		return nil, nil, fmt.Errorf("%s: CA: %w", o.name, err)
 	}
 	leaf, err := makeLeaf(ca, caKey, &m.IssuerKey.PublicKey, nb, na)
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: leaf: %w", name, err)
+		return nil, nil, fmt.Errorf("%s: leaf: %w", o.name, err)
 	}
 
-	if err := assertFixtureVerifies(circuit, m, proof, leaf, credValue, want); err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", name, err)
+	// Assert on the INTACT leaf: the "leaf carries the MSO-signing key" invariant is
+	// about the wiring being right, and a corrupted cert cannot answer that question.
+	vName, err := assertFixtureVerifies(circuit, m, proof, leaf, o.credValue, o.want)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s: %w", o.name, err)
 	}
 
-	fixture, err = packageFixture(m, proof, leaf, ca, wireValue)
+	shipLeaf := leaf
+	if o.mangleCert {
+		if shipLeaf, err = mangleLeaf(leaf, ca); err != nil {
+			return nil, nil, fmt.Errorf("%s: %w", o.name, err)
+		}
+	}
+
+	fixture, err = packageFixture(m, proof, shipLeaf, ca, o.wireValue)
 	if err != nil {
 		return nil, nil, err
 	}
 	verdict := "verifies"
-	if want == expectReject {
-		verdict = "correctly refused"
+	if o.want == expectReject {
+		verdict = "correctly refused: " + vName
 	}
 	fmt.Printf("  [%s] proof=%dB  DS-key=%s...  cert %s..%s  ZK: %s\n",
-		name, len(proof), m.IssuerPkX[:18], nb.Format("2006-01-02"), na.Format("2006-01-02"), verdict)
+		o.name, len(proof), m.IssuerPkX[:18], nb.Format("2006-01-02"), na.Format("2006-01-02"), verdict)
 	return fixture, ca.Raw, nil
 }
 
-// GenFixtures writes the four-scenario fixture set + trust PEM into outDir. The
-// circuit is read from circuitDir/<circuitHash0>.
+// unlinkabilitySet emits the three presentations PRD §7.3's black-box check needs,
+// all under ONE issuer, ONE CA and ONE document-signer cert — as a real issuer
+// would:
+//
+//	a1, a2 — the SAME credential presented twice, under different session nonces
+//	b1     — a DIFFERENT credential (fresh device key, fresh salt) from the same issuer
+//
+// b1 is the control, and it is what makes the check falsifiable. Without it,
+// "a1 and a2 share no identifier" could be satisfied trivially. With it, the suite
+// can assert the stronger and actually meaningful property: whatever the verifier
+// can see is shared by a1 and a2 is shared by b1 too — i.e. it identifies the
+// ISSUER, not the holder. A salt, an MSO digest, or a device key leaking into the
+// verifier-visible envelope would make b1 differ, and the test would go red.
+//
+// Every presentation must ZK-verify: an unlinkability claim over proofs that do not
+// verify is worthless.
+func unlinkabilitySet(circuit []byte) (fixtures map[string][]byte, caDER []byte, err error) {
+	issuer, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unlinkable: issuer key: %w", err)
+	}
+	nb, na := certWindow()
+	ca, caKey, err := makeCA("8een M2 Unlinkability Issuer CA", nb, na)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unlinkable: CA: %w", err)
+	}
+	// ONE leaf, carrying the ONE issuer key, shared by both credentials — so the
+	// cert chain cannot itself be the thing that distinguishes them.
+	leaf, err := makeLeaf(ca, caKey, &issuer.PublicKey, nb, na)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unlinkable: leaf: %w", err)
+	}
+
+	f5 := []byte{0xF5}
+	credA, err := MintCredentialUnder(issuer, f5)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unlinkable: credential A: %w", err)
+	}
+	credB, err := MintCredentialUnder(issuer, f5)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unlinkable: credential B: %w", err)
+	}
+
+	present := func(name string, c *Credential) ([]byte, error) {
+		transcript, err := newSessionTranscript()
+		if err != nil {
+			return nil, fmt.Errorf("unlinkable %s: %w", name, err)
+		}
+		m, err := c.Present(transcript)
+		if err != nil {
+			return nil, fmt.Errorf("unlinkable %s: present: %w", name, err)
+		}
+		proof, pName, pCode := RunProver(circuit, m, f5)
+		if pCode != 0 {
+			return nil, fmt.Errorf("unlinkable %s: prover failed: %s", name, pName)
+		}
+		if _, err := assertFixtureVerifies(circuit, m, proof, leaf, f5, expectAccept); err != nil {
+			return nil, fmt.Errorf("unlinkable %s: %w", name, err)
+		}
+		fx, err := packageFixture(m, proof, leaf, ca, f5)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Printf("  [unlinkable-%s] proof=%dB  DS-key=%s...  ZK: verifies\n", name, len(proof), m.IssuerPkX[:18])
+		return fx, nil
+	}
+
+	a1, err := present("a1", credA)
+	if err != nil {
+		return nil, nil, err
+	}
+	a2, err := present("a2", credA)
+	if err != nil {
+		return nil, nil, err
+	}
+	b1, err := present("b1", credB)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Two presentations that came out byte-identical would make the suite's
+	// "different presentations" premise false, and its unlinkability assertions
+	// vacuous. They are randomised (fresh nonce, fresh proof), so this should be
+	// impossible — check it rather than trust it.
+	if bytes.Equal(a1, a2) {
+		return nil, nil, fmt.Errorf("unlinkable: a1 and a2 are byte-identical — the two presentations did not actually differ")
+	}
+
+	return map[string][]byte{"unlinkable-a1": a1, "unlinkable-a2": a2, "unlinkable-b1": b1}, ca.Raw, nil
+}
+
+// GenFixtures writes the fixture set + trust PEM into outDir. The circuit is read
+// from circuitDir/<circuitHash0>.
 func GenFixtures(circuitDir, outDir string) error {
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return err
@@ -342,7 +524,9 @@ func GenFixtures(circuitDir, outDir string) error {
 	}
 
 	// 1. valid — age_over_18=true, DS chains to a trusted CA. -> ACCEPT.
-	fx, caDER, err := scenario(circuit, "valid", f5, f5, false, expectAccept)
+	fx, caDER, err := scenario(circuit, scenarioOpts{
+		name: "valid", credValue: f5, wireValue: f5, want: expectAccept,
+	})
 	if err != nil {
 		return err
 	}
@@ -357,7 +541,9 @@ func GenFixtures(circuitDir, outDir string) error {
 	//    earlier, at chain validation (ISSUER_UNTRUSTED). If this proof failed to
 	//    verify we would be testing the wrong thing and would never learn whether
 	//    the trust boundary works.
-	fx, untrustedCA, err := scenario(circuit, "untrusted-issuer", f5, f5, false, expectAccept)
+	fx, untrustedCA, err := scenario(circuit, scenarioOpts{
+		name: "untrusted-issuer", credValue: f5, wireValue: f5, want: expectAccept,
+	})
 	if err != nil {
 		return err
 	}
@@ -369,7 +555,9 @@ func GenFixtures(circuitDir, outDir string) error {
 	//    The proof is VALID (Status:true) but the CLAIM is false: over-18 is
 	//    (Status==true AND claim==true), so this is NOT over-18. A consumer reading
 	//    Status alone would wrongly accept a validly-proven minor.
-	fx, caDER, err = scenario(circuit, "underage", f4, f4, false, expectAccept)
+	fx, caDER, err = scenario(circuit, scenarioOpts{
+		name: "underage", credValue: f4, wireValue: f4, want: expectAccept,
+	})
 	if err != nil {
 		return err
 	}
@@ -383,13 +571,65 @@ func GenFixtures(circuitDir, outDir string) error {
 	//    CLAIMS age_over_18=true — the CLAUDE.md failure-mode #4 echo trap: the
 	//    service returns Status:false but Claims echoes true; when Status:false the
 	//    echo is unverified noise and must be discarded. -> ZK_PROOF_INVALID.
-	fx, caDER, err = scenario(circuit, "tampered", f5, f5, true, expectReject)
+	fx, caDER, err = scenario(circuit, scenarioOpts{
+		name: "tampered", credValue: f5, wireValue: f5, tamperProof: true, want: expectReject,
+	})
 	if err != nil {
 		return err
 	}
 	trusted = append(trusted, caDER)
 	if err := write("tampered", fx); err != nil {
 		return err
+	}
+
+	// 5. stale-nonce — PRD §7.1's "a replayed proof (wrong/stale nonce)". A perfectly
+	//    good over-18 proof, bound to session transcript A, replayed into session B.
+	//    The DS chains to a trusted CA and the ZK math is untouched: the ONLY thing
+	//    wrong is that the proof belongs to another session. The device signature is
+	//    what catches it.
+	//
+	//    This is the row that keeps the project honest about replay. A BYTE-IDENTICAL
+	//    replay (same transcript) is still ACCEPTED by design — the verifier is
+	//    stateless, and the integration suite has a passing test saying so. What must
+	//    never be accepted is a proof lifted into a DIFFERENT session. Freshness of
+	//    the nonce itself remains the gate's job (M4).
+	fx, caDER, err = scenario(circuit, scenarioOpts{
+		name: "stale-nonce", credValue: f5, wireValue: f5, staleNonce: true, want: expectReject,
+	})
+	if err != nil {
+		return err
+	}
+	trusted = append(trusted, caDER)
+	if err := write("stale-nonce", fx); err != nil {
+		return err
+	}
+
+	// 6. mangled-cert — valid over-18 proof, trusted CA, but the leaf's signature is
+	//    corrupted. The cert still parses; it just does not chain. Rejection must come
+	//    from chain validation, NOT the ZK layer (hence expectAccept on the proof) —
+	//    the same two-layer distinction as untrusted-issuer, and a crash here would be
+	//    a robustness bug rather than a verdict.
+	fx, caDER, err = scenario(circuit, scenarioOpts{
+		name: "mangled-cert", credValue: f5, wireValue: f5, mangleCert: true, want: expectAccept,
+	})
+	if err != nil {
+		return err
+	}
+	trusted = append(trusted, caDER)
+	if err := write("mangled-cert", fx); err != nil {
+		return err
+	}
+
+	// 7. the unlinkability set (PRD §7.3) — three presentations under one issuer.
+	unlinkable, caDER, err := unlinkabilitySet(circuit)
+	if err != nil {
+		return err
+	}
+	trusted = append(trusted, caDER)
+	for name, b := range unlinkable {
+		if err := write(name, b); err != nil {
+			return err
+		}
 	}
 
 	// Trust PEM: exactly the CAs of the fixtures that should chain (valid, underage,
@@ -410,6 +650,11 @@ func GenFixtures(circuitDir, outDir string) error {
 	if err := os.WriteFile(filepath.Join(outDir, "caCerts.pem"), pemBuf, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("wrote 4 fixtures + caCerts.pem (%d trusted CA certs; untrusted-issuer's CA withheld)\n", len(trusted))
+	written, err := filepath.Glob(filepath.Join(outDir, "*.json"))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("wrote %d fixtures + caCerts.pem (%d trusted CA certs; untrusted-issuer's CA withheld)\n",
+		len(written), len(trusted))
 	return nil
 }
