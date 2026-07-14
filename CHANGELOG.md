@@ -4,6 +4,75 @@ All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) ·
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+**Docs only. No runtime change** — `src/` and `types/` are untouched, dependencies are
+still zero, the tarball is byte-identical. What changes is what we *claim*, which in
+four places was wrong.
+
+### Retracted — claims that were false
+- **"The EU app enables ZK proofs only in the demo build."** Both flavors (`Dev`,
+  `Demo`) configure Longfellow identically; there is no flavor without it. The two
+  config files differ by a trailing comma and two comments.
+- **"The EU's ZK verifier is off by default, browser-only, behind a Chrome flag."**
+  The feature flag (`VITE_FEATURE_FLAG_DC_API`) is **dead code** — declared, never
+  read. The real gate is runtime browser capability detection, so the ZK path switches
+  itself **on**. The Digital Credentials API shipped unflagged in **Chrome 141**
+  (Oct 2025). The service is **deployed and live** — reached over plain HTTP with
+  `curl`, across three transports. We had reasoned from an empty `.env.example` to
+  "it's off" instead of reading what actually runs — the exact mistake `CLAUDE.md`
+  forbids, committed against someone else's config file.
+
+### Retracted — a claim that was unfair to the EU
+- **"Batches of 30 single-use credentials are rate-limited linkability, not
+  unlinkability."** Against **colluding relying parties this is genuinely unlinkable**
+  — each attestation is bound to a distinct device key, so there is no
+  credential-borne correlator. The claim was inherited from a secondary source and
+  never checked. It was also the sentence most likely to discredit everything around
+  it. The real gap is *who* batching protects you from: **not the issuer**, who signs
+  each attestation and could recognise it — and the spec's only safeguard there is
+  that it *"does not require"* the issuer to retain anything, which is a policy, not a
+  cryptographic guarantee.
+
+### Corrected
+- ZKP is **`SHOULD` (RFC 2119: RECOMMENDED)**, not "optional" (`MAY`) — and the
+  mechanism sits in the chapter titled **"Experimental features."**
+- **eIDAS 5a(16):** lean on limb **(a)**, which names the **attestation provider** —
+  the issuer — as a party that must not be able to link transactions. The published OJ
+  text spells it **"unlikeability"** *[sic]*; quoting it as "unlinkability" misquotes
+  the law.
+
+### Added — two findings, both stronger than the claims they replace
+- **The EU wallet cannot emit a ZK proof over OpenID4VP at all.**
+  `DcqlRequestProcessor` is never handed the ZK repository (wallet-core 0.28.1). On the
+  protocol the web actually uses, the unlinkable path **does not exist end-to-end**:
+  the wallet cannot produce a proof, and the flagship OpenID4VP verifier — **zero ZK
+  code, zero ZK commits in its entire history** — cannot check one.
+- **On proof-generation failure the wallet silently discloses the entire document.**
+  The default `ZkResponsePolicy` is `FallbackToFullDisclosure`; the library's own docs
+  call the safe setting *"recommended for production use to prevent unintended full
+  document disclosure"* — and **neither the app nor wallet-core ever sets it.** This is
+  8een's own recurring failure shape — a security-critical step fails, the status stays
+  green, and the system silently does the *wrong* thing — **found in someone else's
+  code.**
+
+### Changed
+- **The thesis is narrower and better evidenced.** Not *"nobody can verify these"* — a
+  working ZK verifier exists, is vendored from OpenWallet's Multipaz, and is live. The
+  argument that survives: the unlinkable path is not **reachable** on the mainstream
+  protocol, not **default** anywhere, not **fail-safe** when it breaks, and not
+  **adoptable** as a small stateless dependency.
+- **M3 and decision D2 amended.** Any app flavor will do, but a proof **must be
+  captured over the DC API or proximity, never OpenID4VP** — which cannot emit one.
+  `av-dc-api-backend` is now available as a **live differential oracle** to test 8een
+  against.
+
+### Method
+Every claim above was handed to an independent check instructed to **refute** it and to
+default to REFUTED on thin evidence. **Three of the four went in and came back
+altered.** Each surviving claim is pinned to a file, a line, and a commit in
+[`docs/02-evidence/EU-STACK-AUDIT.md`](docs/02-evidence/EU-STACK-AUDIT.md).
+
 ## [0.1.2] — 2026-07-14
 
 **M2 PASSED.** The test suite now mints its own credentials and runs against the
