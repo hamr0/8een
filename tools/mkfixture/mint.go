@@ -546,7 +546,10 @@ func deviceAuthCose1(transcript []byte) ([]byte, error) {
 	// diverge our preimage from the verifier's and fail every device signature.
 	//
 	// The guard keeps us out of that region entirely rather than relying on it being
-	// self-consistent: da is 52 bytes for our fixed docType and 4-byte transcript.
+	// self-consistent. With our fixed docType, da = 48 + len(transcript): 52 bytes for
+	// the 4-byte default transcript the golden test pins, 68 for the 20-byte
+	// nonce-bearing transcript every minted fixture now uses. Both clear 24 by a wide
+	// margin, and the guard fires rather than guesses if a caller ever shrinks it.
 	if l1 < 24 {
 		return nil, fmt.Errorf(
 			"DeviceAuthentication is %d bytes; under 24 upstream's l2 formula (mdoc_witness.h:475) leaves canonical CBOR", l1)

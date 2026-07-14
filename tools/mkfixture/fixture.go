@@ -367,7 +367,14 @@ func scenario(circuit []byte, o scenarioOpts) (fixture, caDER []byte, err error)
 
 	// Assert on the INTACT leaf: the "leaf carries the MSO-signing key" invariant is
 	// about the wiring being right, and a corrupted cert cannot answer that question.
-	vName, err := assertFixtureVerifies(circuit, m, proof, leaf, o.credValue, o.want)
+	//
+	// Verify against wireValue, NOT credValue: the service derives the attribute value
+	// it checks from the ENVELOPE (reference/.../zk/cbor.go:235 -- cborValList[i] =
+	// attr.ElementValue), not from whatever the holder actually proved. For every
+	// honest fixture the two are the same value. For substituted-claim they are not,
+	// and that difference is the entire point of it -- asserting against credValue
+	// there would model a request the service never makes.
+	vName, err := assertFixtureVerifies(circuit, m, proof, leaf, o.wireValue, o.want)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", o.name, err)
 	}
@@ -620,7 +627,34 @@ func GenFixtures(circuitDir, outDir string) error {
 		return err
 	}
 
-	// 7. the unlinkability set (PRD §7.3) — three presentations under one issuer.
+	// 7. substituted-claim — the sharpest form of the Claims-echo trap, and an attack
+	//    the holder can mount entirely on their own.
+	//
+	//    An HONEST minor takes their own perfectly valid age_over_18=FALSE proof and
+	//    edits ONE byte of the wire envelope: the IssuerSigned ElementValue, 0xF4 ->
+	//    0xF5. Nothing is forged. The proof is untouched and the chain is genuine.
+	//    The envelope now simply CLAIMS over-18 where the credential does not.
+	//
+	//    This must be refused, and the thing that refuses it is the binding: the
+	//    service takes the attribute value it verifies FROM THE ENVELOPE
+	//    (reference/.../zk/cbor.go:235), so the circuit is asked to prove that a
+	//    credential committing 0xF4 has elementValue 0xF5, and the constraint fails.
+	//    If that binding ever broke, a minor's own valid proof would be relabelled
+	//    over-18 and ACCEPTED -- a false ACCEPT, the one direction 8een cannot
+	//    tolerate. The knob to build this existed since the generator was written and
+	//    was never turned; a code review caught that it was documented but untested.
+	fx, caDER, err = scenario(circuit, scenarioOpts{
+		name: "substituted-claim", credValue: f4, wireValue: f5, want: expectReject,
+	})
+	if err != nil {
+		return err
+	}
+	trusted = append(trusted, caDER)
+	if err := write("substituted-claim", fx); err != nil {
+		return err
+	}
+
+	// 8. the unlinkability set (PRD §7.3) — three presentations under one issuer.
 	unlinkable, caDER, err := unlinkabilitySet(circuit)
 	if err != nil {
 		return err
@@ -632,10 +666,11 @@ func GenFixtures(circuitDir, outDir string) error {
 		}
 	}
 
-	// Trust PEM: exactly the CAs of the fixtures that should chain (valid, underage,
-	// tampered). untrusted-issuer's CA must be ABSENT — that omission is the entire
-	// negative test, and it is the kind of thing a later edit silently undoes. Check
-	// it rather than trusting that we remembered.
+	// Trust PEM: the CAs of every fixture that should chain — valid, underage,
+	// tampered, stale-nonce, mangled-cert, substituted-claim, and the unlinkability
+	// issuer. ONLY untrusted-issuer's CA is withheld: that omission is the entire
+	// negative test, and it is exactly the kind of thing a later edit silently undoes.
+	// Check it rather than trusting that we remembered.
 	for _, der := range trusted {
 		if bytes.Equal(der, untrustedCA) {
 			return fmt.Errorf(

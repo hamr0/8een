@@ -101,9 +101,22 @@ function mintFixtures() {
   return dir;
 }
 
-const pocPresent = existsSync(join(SERVER_DIR, 'server')) && existsSync(CIRCUIT_SOURCE);
-const skipReason = !pocPresent
-  ? 'POC clone not materialized (see poc/M0-EVIDENCE.md)'
+// Building mkfixture links longfellow's static lib through cgo, so the POC's
+// install/ prefix must be present too -- not just the server binary. Checking only
+// the binary would let a clone that was materialized but never fully built sail past
+// the guard and blow up inside `go build` at module import, taking the whole file
+// down: including the four circuit/trust-list tests that need no fixtures at all.
+// Check every input we are about to depend on, rather than a proxy for them.
+const INSTALL = join(SERVER_DIR, '../install');
+const REQUIRED = [
+  join(SERVER_DIR, 'server'),
+  CIRCUIT_SOURCE,
+  join(INSTALL, 'lib/libmdoc_static.a'),
+  join(INSTALL, 'include/mdoc_zk.h'),
+];
+const missing = REQUIRED.filter((p) => !existsSync(p));
+const skipReason = missing.length
+  ? `POC clone not fully built -- missing ${missing.join(', ')} (see poc/M0-EVIDENCE.md step 1)`
   : !haveGo()
     ? 'Go toolchain absent -- needed to mint the M2 fixtures'
     : false;
@@ -154,6 +167,7 @@ const UNTRUSTED_ISSUER = () => proof('untrusted-issuer');
 const TAMPERED = () => proof('tampered');
 const STALE_NONCE = () => proof('stale-nonce');
 const MANGLED_CERT = () => proof('mangled-cert');
+const SUBSTITUTED_CLAIM = () => proof('substituted-claim');
 
 // The zero-circuit trap. A server pointed at an empty directory reports
 // /healthz "ok", advertises 12 specs it does not have, and rejects every valid
@@ -339,10 +353,35 @@ test('the negative matrix (PRD §7.1)', suite, async (t) => {
   // A corrupted signature on an otherwise well-formed cert. The ZK proof inside is
   // valid -- mkfixture asserts that before emitting it -- so a pass here would mean
   // the chain was never checked at all.
-  await t.test('a proof with a mangled cert chain is rejected, not crashed on', async () => {
+  //
+  // The reason is asserted, not just the verdict. Every other rejection row here
+  // pins its reason; this one did not, which meant the chain-vs-ZK distinction it
+  // exists to prove was documented and unchecked -- a regression that classified a
+  // chain failure as zk_proof_invalid would have kept it green. The reason SPLIT is
+  // diagnostic (both branches reject), but that is exactly why it has to be pinned:
+  // it is the only thing distinguishing this row from the tampered one.
+  await t.test('a proof with a mangled cert chain is rejected at the CHAIN, not crashed on', async () => {
     const r = await v.check(MANGLED_CERT());
     assert.equal(r.ok, true);
     assert.equal(r.over_threshold, false);
+    assert.equal(r.reason, REASONS.ISSUER_UNTRUSTED, 'a broken chain must not be reported as a bad proof');
+  });
+
+  // The sharpest form of the Claims-echo trap, and the one a holder can mount alone:
+  // an honest minor takes their own VALID age_over_18=false proof and flips one byte
+  // of the wire envelope so it CLAIMS true. Nothing is forged; the proof and the
+  // chain are genuine. Only the envelope lies.
+  //
+  // What refuses it is the binding: the service verifies against the value it reads
+  // from the ENVELOPE (reference/.../zk/cbor.go:235), so the circuit is asked to show
+  // a credential committing false has elementValue true, and the constraint fails. If
+  // that binding broke, this would be a false ACCEPT of a minor -- the one direction
+  // 8een cannot tolerate.
+  await t.test('a minor cannot relabel their own valid proof as over-18', async () => {
+    const r = await v.check(SUBSTITUTED_CLAIM());
+    assert.equal(r.ok, true);
+    assert.equal(r.over_threshold, false, 'a false ACCEPT here would be the worst bug in the system');
+    assert.equal(r.reason, REASONS.ZK_PROOF_INVALID);
   });
 
   await t.test('garbage is rejected, not crashed on', async () => {
@@ -387,24 +426,30 @@ test('the negative matrix (PRD §7.1)', suite, async (t) => {
 });
 
 /**
- * PRD §7.3, the half that is TESTED BY US: two presentations of the same credential
- * must give the verifier nothing to link them by.
+ * PRD §7.3, behavioural half -- and an honest account of what it does and does not
+ * establish, because the first cut of this test overstated it and a review caught it.
  *
- * a1 and a2 are the same credential shown twice, under different session nonces.
- * b1 is a DIFFERENT credential from the same issuer, and it is the control: it is
- * what stops this test being satisfied trivially. Whatever a1 and a2 have in common,
- * b1 must have too -- otherwise that commonality identifies a holder rather than an
- * issuer, and the presentations are linkable.
+ * WHAT THIS CANNOT SHOW. A Verdict for any accepted proof is the constant object
+ * {ok:true, over_threshold:true, reason:'verified', detail:'age_over_18'} -- there is
+ * no field in it that COULD carry per-presentation data. So asserting the three
+ * verdicts are equal is a tautology: it is already implied by asserting they all
+ * verify, and it would hold even for a verifier that leaked a holder's identity
+ * somewhere else entirely. It is kept below as a smoke check, and it is NOT evidence.
  *
- * The byte-level form of that claim (the verifier-visible envelope is IDENTICAL
- * across all three) is asserted in tools/mkfixture/unlink_test.go, where the CBOR
- * library already lives -- 8een itself parses no CBOR, and will not grow a parser to
- * test itself (NO-GO #8). What is asserted HERE is the black-box behaviour through
- * the public API: the verifier's answers are indistinguishable.
+ * WHERE THE EVIDENCE ACTUALLY IS. The falsifiable check is
+ * TestProofBytesCarryNoPerCredentialIdentifier in tools/mkfixture/unlink_test.go: it
+ * compares the byte overlap between two presentations of the SAME credential against
+ * two presentations of DIFFERENT credentials from the same issuer, with a
+ * self-comparison as the harness control. A stable identifier hidden in the proof
+ * would show up as excess same-credential overlap, and the test goes red. Measured:
+ * self 360,013 shared 8-grams (the detector works), same-credential 1,
+ * different-credential 1 -- background, and equal. It lives in Go because reading a
+ * proof back means decoding CBOR, and 8een parses no CBOR and will not grow a parser
+ * to test itself (NO-GO #8).
  *
- * NOT claimed, in either place: that longfellow's proof bytes hide every
- * per-credential identifier. That is the cryptographic result, and PRD §7.3 scopes it
- * as cited, not claimed -- it rests on the scheme's security analysis, not on us.
+ * STILL NOT CLAIMED: full cryptographic unlinkability. A byte-overlap probe can find
+ * a naive identifier; it cannot rule out a subtle one. PRD §7.3 scopes that as cited,
+ * not claimed -- it rests on the scheme's security analysis, not on us.
  */
 test('unlinkability: two presentations of one credential are indistinguishable (PRD §7.3)', suite, async (t) => {
   const service = new VerifierService({ ...RIG, port: 8919 });
@@ -423,18 +468,20 @@ test('unlinkability: two presentations of one credential are indistinguishable (
     assert.equal(r.over_threshold, true, `${name} must verify`);
   }
 
-  // The verdict for two presentations of the SAME credential is identical to the
-  // verdict for a DIFFERENT credential from the same issuer. The verifier's answer
-  // therefore carries nothing that could link a1 to a2.
-  assert.deepEqual(a1, a2, 'two presentations of one credential must be indistinguishable to the verifier');
-  assert.deepEqual(a1, b1, 'and no more alike than two presentations of DIFFERENT credentials');
+  // SMOKE CHECK, not evidence -- see the header. The verdict object is constant for
+  // every accepted proof, so this cannot discriminate and cannot fail on its own. It
+  // is here to catch the crude regression where a verdict starts carrying something
+  // per-presentation at all (a session id, a serial, a timestamp): that WOULD break
+  // these equalities, and it is the only thing they can detect.
+  assert.deepEqual(a1, a2, 'the verdict must not start carrying per-presentation data');
+  assert.deepEqual(a1, b1, 'nor anything that distinguishes one credential from another');
 
-  // Non-vacuity: the presentations really were different bytes on the wire. Had they
-  // been identical, "indistinguishable verdicts" would be a tautology rather than a
-  // finding.
+  // The presentations really were different bytes on the wire. Without this the
+  // equalities above would be comparing a proof with itself.
   const wireA1 = readFileSync(join(FIXTURES, 'unlinkable-a1.json'), 'utf8');
   const wireA2 = readFileSync(join(FIXTURES, 'unlinkable-a2.json'), 'utf8');
   assert.notEqual(wireA1, wireA2, 'the two presentations must not be byte-identical, or this proves nothing');
 
-  t.diagnostic(`identical verdicts across 3 presentations: ${JSON.stringify(a1)}`);
+  t.diagnostic(`verdicts identical across 3 presentations: ${JSON.stringify(a1)}`);
+  t.diagnostic('the falsifiable check is TestProofBytesCarryNoPerCredentialIdentifier (tools/mkfixture)');
 });

@@ -60,22 +60,117 @@ func documentDataAndProof(t *testing.T, path string) (documentData, proof []byte
 	return resp.ZKDocuments[0].DocumentData, resp.ZKDocuments[0].Proof
 }
 
-// TestPresentationsOfSameCredentialAreUnlinkable asserts the property PRD §7.3
-// calls the black-box check, in the strong form: the verifier-visible envelope is
-// identical not just across two presentations of ONE credential (which alone could
-// be satisfied trivially), but across presentations of DIFFERENT credentials from
-// the same issuer.
+// sharedKGrams counts the DISTINCT k-byte sequences that occur in both a and b.
 //
-// That equality is what makes the claim mean something. It says the envelope
-// distinguishes NOTHING at the credential level: a1 and a2 are linkable to each
-// other by exactly as much as a1 is linkable to b1 — which is to say, by the
-// issuer's own certificate, and nothing else.
+// This is the detector for a stable per-credential identifier hiding in the proof
+// bytes. If two presentations of one credential embedded a common value of k bytes
+// or more -- a credential id, a device-key-derived tag, an unrandomised commitment
+// -- they would share k-grams that presentations of DIFFERENT credentials do not.
+// Comparing same-credential overlap against different-credential overlap is what
+// turns that into a falsifiable statement, and it needs no knowledge of longfellow's
+// internals: it reads the proof as an opaque blob, which is precisely what a
+// colluding pair of verifiers would do.
+func sharedKGrams(a, b []byte, k int) int {
+	if len(a) < k || len(b) < k {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(a))
+	for i := 0; i+k <= len(a); i++ {
+		seen[string(a[i:i+k])] = struct{}{}
+	}
+	shared := make(map[string]struct{})
+	for i := 0; i+k <= len(b); i++ {
+		g := string(b[i : i+k])
+		if _, ok := seen[g]; ok {
+			shared[g] = struct{}{}
+		}
+	}
+	return len(shared)
+}
+
+// TestProofBytesCarryNoPerCredentialIdentifier is the black-box unlinkability check
+// that can actually FAIL.
 //
-// It is genuinely falsifiable: had the salt, an MSO digest, the device key, or the
-// issuerAuth signature leaked into the wire envelope, b1 would differ from a1 and
-// this test would go red. Those are precisely the credential-unique values, and
-// they are precisely what the ZK proof exists to keep out of the envelope.
-func TestPresentationsOfSameCredentialAreUnlinkable(t *testing.T) {
+// The two assertions in TestPresentationsOfSameCredentialAreUnlinkable cannot: the
+// envelope is assembled by our own packageFixture out of fields that are constant
+// across credentials, so its equality is a property of the generator, not a
+// discovery about the protocol. That test is still worth keeping as a change
+// detector -- see its comment -- but it is NOT evidence, and it must not be sold as
+// evidence.
+//
+// This one compares the only thing that actually varies per presentation: the proof.
+// If longfellow leaked a stable per-credential value into it, the same-credential
+// overlap would exceed the different-credential overlap by roughly that value's
+// size. The self-comparison is the harness control: it proves the detector can see
+// an identifier when one is there, so a null result means "no identifier found"
+// rather than "the test is broken".
+func TestProofBytesCarryNoPerCredentialIdentifier(t *testing.T) {
+	circuit := loadCircuit(t)
+
+	fixtures, _, err := unlinkabilitySet(circuit)
+	if err != nil {
+		t.Fatalf("unlinkabilitySet: %v", err)
+	}
+	dir := t.TempDir()
+	for name, fx := range fixtures {
+		if err := os.WriteFile(filepath.Join(dir, name+".json"), fx, 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	_, proofA1 := documentDataAndProof(t, filepath.Join(dir, "unlinkable-a1.json"))
+	_, proofA2 := documentDataAndProof(t, filepath.Join(dir, "unlinkable-a2.json"))
+	_, proofB1 := documentDataAndProof(t, filepath.Join(dir, "unlinkable-b1.json"))
+
+	const k = 8 // 8 bytes: far beyond what random 360 KB blobs collide on by chance
+
+	self := sharedKGrams(proofA1, proofA1, k) // control: the detector working
+	same := sharedKGrams(proofA1, proofA2, k) // SAME credential, two sessions
+	diff := sharedKGrams(proofA1, proofB1, k) // DIFFERENT credentials, same issuer
+
+	t.Logf("shared distinct %d-grams -- self:%d  same-credential:%d  different-credential:%d", k, self, same, diff)
+
+	// HARNESS CONTROL. If this fails, every number above is meaningless and the
+	// null result below would be an artifact rather than a finding.
+	if self < 1000 {
+		t.Fatalf("the detector cannot even find a proof inside itself (self=%d) -- the harness is broken, not the crypto", self)
+	}
+
+	// THE ASSERTION. Two presentations of the SAME credential must not share
+	// materially more than two presentations of DIFFERENT credentials do. Whatever
+	// baseline overlap exists (structural constants, encoding padding) is shared by
+	// both pairs; an IDENTIFIER would show up only in `same`.
+	//
+	// The margin is deliberately tight: an identifier worth having is at least a few
+	// bytes, and at k=8 even a single 16-byte tag would contribute ~9 distinct grams.
+	const margin = 8
+	if same > diff+margin {
+		t.Fatalf("two presentations of the SAME credential share %d distinct %d-grams, but two DIFFERENT credentials "+
+			"share only %d -- the excess is a stable per-credential identifier in the proof bytes, and the presentations are LINKABLE",
+			same, k, diff)
+	}
+}
+
+// TestEnvelopeCarriesNothingCredentialSpecific asserts that the verifier-visible
+// envelope is byte-identical across a1, a2 AND b1 — so it distinguishes nothing at
+// the credential level.
+//
+// BE HONEST ABOUT WHAT THIS IS: a CHANGE DETECTOR over our own wire format, not
+// evidence about the protocol. packageFixture assembles DocumentData from the
+// docType, the zk system id, the claimed element value, the cert chain and the
+// timestamp — and unlinkabilitySet hands all three presentations the same leaf, the
+// same CA and the same claimed value. The equality below is therefore guaranteed by
+// construction: no code path exists by which a salt, an MSO digest or the device key
+// could reach this struct. An earlier version of this comment called it "genuinely
+// falsifiable", which was wrong, and a code review caught it. A test authored to
+// contain the phenomenon it tests can only ever confirm it.
+//
+// It still earns its place: if someone later widens the envelope — a serial, a holder
+// binding, a per-credential hint — b1 stops matching a1 and this goes red. That is
+// worth having. It is simply not proof of anything.
+//
+// The falsifiable check is TestProofBytesCarryNoPerCredentialIdentifier above, which
+// probes the only thing that genuinely varies per presentation: the proof bytes.
+func TestEnvelopeCarriesNothingCredentialSpecific(t *testing.T) {
 	circuit := loadCircuit(t)
 
 	fixtures, _, err := unlinkabilitySet(circuit)

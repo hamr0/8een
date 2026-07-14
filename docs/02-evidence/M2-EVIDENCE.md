@@ -103,6 +103,7 @@ Observed on one full run against the real static lib:
 | `tampered` | `age_over_18=true`, one proof byte flipped | 361,364 B | **REFUSED** — `MDOC_VERIFIER_GENERAL_FAILURE` (code 5) |
 | `stale-nonce` | `age_over_18=true`, proven under session A, presented under session B | 360,820 B | **REFUSED** — `MDOC_VERIFIER_GENERAL_FAILURE` (code 5); the device signature does not match a preimage rebuilt over another session's transcript |
 | `mangled-cert` | `age_over_18=true`, leaf signature byte corrupted | 359,924 B | **SUCCESS** — by design; the ZK proof is sound and the rejection must come from *chain* validation |
+| `substituted-claim` | credential proves `age_over_18=**false**`; the wire envelope claims **true** | 360,596 B | **REFUSED** — `MDOC_VERIFIER_GENERAL_FAILURE` (code 5). The service verifies against the *envelope's* value, so the circuit is asked to prove `false == true` |
 | `unlinkable-a1/a2/b1` | `age_over_18=true` ×3, one issuer, one DS cert | ~360 KB each | **SUCCESS** ×3 — a1/a2 are one credential presented twice; b1 is a *different* credential from the same issuer |
 
 Whole run: **16.2 s** for all nine fixtures including their self-verification —
@@ -139,15 +140,29 @@ repo's silent-partial-load theme:
 
 ## The pinned clock is gone — measured 2026-07-14
 
-`ZKVERIFY_FAKE_TIME` no longer appears in `src/`, `test/` or `tools/`. The
-integration suite mints its fixtures at setup and runs entirely on the real wall
-clock. **18/18 pass, 0 skipped, 281 s.**
+`ZKVERIFY_FAKE_TIME` is **no longer used** anywhere: it is not passed to the service,
+not read by `src/`, and not set by the harness. It survives only in comments — in
+`test/integration.test.js`, `tools/mkfixture/fixture.go` and this log — explaining
+its removal. (`grep -rn ZKVERIFY_FAKE_TIME src test tools` returns those comments and
+nothing else; an earlier draft of this line claimed it "no longer appears," which the
+grep it invites falsifies. Say *used*, not *appears*.)
+
+The integration suite mints its fixtures at setup and the **x509 clock is now real**.
+**19/19 pass, 0 skipped.**
 
 This was the point of the whole test-CA exercise, and it is worth being precise
 about what it bought. Under the pinned clock, *no test in the suite could tell a
 working chain-validator from a broken one* — x509 verification was frozen at a date
 where the one available chain happened to be valid. Now the accept path exercises it
 for real.
+
+**What is still NOT on a real clock, stated before anyone rounds this up.** Only the
+x509 chain clock became real. The circuit's own clock — `nowStr` in `mint.go` — is
+still a hardcoded 20-char timestamp supplied by the holder, and the MSO
+`validFrom`/`validUntil` window is a lexical string compare against it. **Credential
+expiry is exercised by no test.** It is not in the PRD §7.1 matrix and so does not
+block M2, but "M2 runs on the real clock" is true of the certificate chain and false
+of the credential. Owed, and recorded as owed.
 
 **post1.json could not come along, and that was measured, not assumed.** On the real
 clock the service rejects *every* post1-derived fixture at chain validation —
@@ -167,42 +182,88 @@ the M0 evidence record.)
 | issuer off the trust list | `ok:true`, `over:false` | `issuer_untrusted` — refused at the chain, not the ZK layer |
 | tampered proof | `ok:true`, `over:false` | `zk_proof_invalid` |
 | **replayed into another session** | `ok:true`, `over:false` | `zk_proof_invalid` |
-| mangled cert chain | `ok:true`, `over:false` | rejected, not crashed on |
+| **minor relabels own valid proof as over-18** | `ok:true`, `over:false` | `zk_proof_invalid` — see below |
+| mangled cert chain | `ok:true`, `over:false` | `issuer_untrusted` — refused at the *chain* |
 | garbage bytes | `ok:true`, `over:false` | rejected, not crashed on |
 | malformed argument | `ok:false`, `over:null` | `invalid_request` — a caller bug is not evidence about a person |
 | over-18 proof, site wants over-21 | `ok:true`, `over:false` | `claim_absent` |
 | byte-identical replay | `ok:true`, `over:true` | **accepted, by design** — see below |
 
-The last two rows of that table must be read together, because they look like a
+**The substitution row was added because a code review found the suite believed it
+covered it and did not.** The generator had carried a `wireValue`/`credValue` split
+since it was written — documented as "how the lying-echo trap is expressed" — and
+every scenario set the two to the same value, so the trap was never built. The attack
+needs no forgery: an honest minor takes their own **valid** `age_over_18=false` proof
+and flips one byte of the wire envelope's `ElementValue`, `0xF4` → `0xF5`. The proof
+and the chain stay genuine; only the envelope lies. What refuses it is the binding —
+the service verifies against the value it reads *from the envelope*
+(`reference/.../zk/cbor.go:235`), so the circuit is asked to show that a credential
+committing `false` has `elementValue = true`, and the constraint fails. Verified:
+refused, `MDOC_VERIFIER_GENERAL_FAILURE` (code 5) → `zk_proof_invalid`. Had that
+binding broken, it would have been a **false ACCEPT of a minor** — the one direction
+8een cannot tolerate, and the row nobody was testing.
+
+The replay rows must be read together, because they look like a
 contradiction and are not. A proof lifted into a **different** session is refused, by
 cryptography — the device signature will not match a preimage rebuilt over another
 transcript. The **same** proof replayed in **its own** session is accepted, because
 the verifier is stateless and has no memory to detect it with. Freshness is the
 gate's job (M4). 8een is not replay-safe and must never be described as such.
 
-### §7.3 unlinkability
+### §7.3 unlinkability — and a retraction
 
-Split across the two places each half can be honestly asserted:
+**RETRACTED.** The first cut of this section claimed §7.3 was evidenced by two
+checks, and a code review established that **neither could fail**:
 
-- **Structural** (`tools/mkfixture/unlink_test.go`): the verifier-visible envelope is
-  **byte-identical** — 1,193 B — across a1, a2 *and* b1, while the three proofs are
-  pairwise distinct. b1 is the control that gives this meaning: it is a *different*
-  credential from the same issuer, so the equality says the envelope distinguishes
-  nothing at the credential level. a1 is linkable to a2 by exactly as much as it is
-  linkable to b1 — i.e. by the issuer's certificate, and nothing else. Non-vacuity is
-  asserted in the same test: a credential from a *different* issuer does produce a
-  different envelope, so the comparison demonstrably discriminates.
-- **Behavioural** (integration suite): the verifier returns byte-identical verdicts
-  for all three presentations, and the wire bytes of a1/a2 are confirmed non-identical
-  so the result is not a tautology.
+- The *behavioural* check asserted the three verdicts were `deepEqual`. But a Verdict
+  for any accepted proof is the constant `{ok:true, over_threshold:true,
+  reason:'verified', detail:'age_over_18'}` (`src/verdict.js:192`) — there is no field
+  in it that *could* carry per-presentation data. The equality was already implied by
+  asserting all three verify. A tautology.
+- The *structural* check asserted the verifier-visible envelope was byte-identical
+  across a1, a2 and b1. But `packageFixture` builds that envelope from the docType,
+  the zk system id, the claimed value, the cert chain and the timestamp — and the
+  unlinkability set hands all three presentations the same leaf, the same CA and the
+  same claimed value. **No code path exists** by which a salt, an MSO digest or a
+  device key could reach it. The equality was guaranteed by our own generator, one
+  file away. It was described as "genuinely falsifiable"; it was not.
 
-The structural half lives in Go because reading it back requires decoding CBOR, and
-8een parses no CBOR itself and will not grow a parser to test itself (NO-GO #8). The
-generator already depends on a CBOR library legitimately, for the wire envelope.
+Both were change detectors dressed as evidence. They are kept, correctly labelled,
+because a later edit that widens the envelope or puts per-presentation data in a
+verdict *would* trip them — but they prove nothing about unlinkability.
 
-**Not claimed:** that longfellow's *proof bytes* hide every per-credential
-identifier. That is the cryptographic result, and PRD §7.3 scopes it as *cited, not
-claimed* — it rests on the scheme's own security analysis, not on any test we wrote.
+**The real check** (`TestProofBytesCarryNoPerCredentialIdentifier`) probes the only
+thing that genuinely varies per presentation: **the proof bytes**. If longfellow
+leaked a stable per-credential value, two presentations of the *same* credential
+would share byte-runs that two *different* credentials do not. Measured, distinct
+shared 8-grams:
+
+| comparison | shared 8-grams |
+|---|---|
+| a1 vs **itself** (harness control) | **360,013** — the detector works |
+| a1 vs a2 — **same** credential, two sessions | **1** |
+| a1 vs b1 — **different** credentials, same issuer | **1** |
+
+Same-credential overlap is identical to different-credential overlap, and both sit at
+background. **No per-credential identifier is detectable in the proof bytes.** The
+self-comparison is what makes that a finding rather than an artifact: it proves the
+detector can see an identifier when one is there, so the null result means "none
+found," not "the test is broken." Had a 16-byte tag been embedded, it would have
+contributed ~9 excess grams and the test would be red.
+
+The check lives in Go because reading a proof back means decoding CBOR, and 8een
+parses no CBOR and will not grow a parser to test itself (NO-GO #8).
+
+**Still not claimed:** full cryptographic unlinkability. A byte-overlap probe finds a
+naive identifier; it cannot rule out a subtle or encrypted one. PRD §7.3 scopes that
+as *cited, not claimed* — it rests on the scheme's own security analysis, not on any
+test we wrote. That line has not moved.
+
+**The lesson, which is the same one this project keeps relearning.** Both retracted
+checks passed on the first run and looked like evidence. What made them worthless was
+never visible in their output — only in asking *what input would make this go red?*
+For the strongest claim in the milestone, the answer was "none." A test authored to
+contain the phenomenon it tests can only confirm it.
 
 ## Honesty notes
 
