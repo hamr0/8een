@@ -123,14 +123,25 @@ func rawSig(priv *ecdsa.PrivateKey, digest []byte) ([]byte, error) {
 
 // ---- domain constants ----
 
+// docType and namespace default to ISO 18013-5 mDL but are overridable from
+// mkfixture's -doctype / -namespace flags. This is what lets the M3 EU-interop
+// suite mint the SAME fixture matrix under the EU AV docType (eu.europa.ec.av.1)
+// and prove the verifier is docType/namespace-agnostic across accept AND reject —
+// 8een's own verify sends the child neither string (service.js), so a real EU
+// proof must verify for the same reason a minted EU-docType one does. They are
+// var, not const, only so the flag can set them; the byte-layout code reads them
+// through tstr(), which is length-driven, so a shorter docType is handled natively.
+var (
+	docType   = "org.iso.18013.5.1.mDL"
+	namespace = "org.iso.18013.5.1"
+)
+
 const (
 	// circuitHash0 names kZkSpecs[0]: 1 attribute, ZK spec version 7, system
 	// longfellow-libzk-v1. The prebuilt circuit file on disk is named by this hash;
 	// it is also the ZkSystemId the service matches by GetCircuitByName + find_zk_spec.
 	circuitHash0 = "8d079211715200ff06c5109639245502bfe94aa869908d31176aae4016182121"
 
-	docType    = "org.iso.18013.5.1.mDL"
-	namespace  = "org.iso.18013.5.1"
 	elemID     = "age_over_18"
 	validFrom  = "2020-01-01T00:00:00Z" // exactly 20 chars
 	validUntil = "2030-01-01T00:00:00Z" // exactly 20 chars
@@ -526,8 +537,9 @@ func deviceAuthCose1(transcript []byte) ([]byte, error) {
 		'h', 'e', 'n', 't', 'i', 'c', 'a', 't', 'i', 'o', 'n',
 	}
 	// docType framing is upstream's append_text_len (mdoc_witness.h:417), which tstr
-	// reproduces exactly (0x60|n under 24, else 0x78 n): docType is 21 chars, so
-	// 0x75. tstr is used rather than a local 0x60|len because the latter silently
+	// reproduces exactly (0x60|n under 24, else 0x78 n) — length-driven, so it is
+	// correct for any docType: mDL is 21 chars (header 0x75), eu.europa.ec.av.1 is 17
+	// (0x71). tstr is used rather than a local 0x60|len because the latter silently
 	// emits a headerless 0x78 at len >= 24.
 	da := cat(
 		deviceAuthentication,
@@ -546,10 +558,12 @@ func deviceAuthCose1(transcript []byte) ([]byte, error) {
 	// diverge our preimage from the verifier's and fail every device signature.
 	//
 	// The guard keeps us out of that region entirely rather than relying on it being
-	// self-consistent. With our fixed docType, da = 48 + len(transcript): 52 bytes for
-	// the 4-byte default transcript the golden test pins, 68 for the 20-byte
-	// nonce-bearing transcript every minted fixture now uses. Both clear 24 by a wide
-	// margin, and the guard fires rather than guesses if a caller ever shrinks it.
+	// self-consistent. da = 22 (DeviceAuthentication) + len(transcript) + len(tstr(docType))
+	// + 4. For mDL (21-char docType) that is 48 + len(transcript): 52 bytes for the 4-byte
+	// default transcript the golden test pins, 68 for the 20-byte nonce-bearing transcript
+	// every minted fixture now uses; for eu.europa.ec.av.1 (17-char) it is 44 + len(transcript).
+	// All clear 24 by a wide margin, and the guard fires rather than guesses if a caller ever
+	// shrinks it.
 	if l1 < 24 {
 		return nil, fmt.Errorf(
 			"DeviceAuthentication is %d bytes; under 24 upstream's l2 formula (mdoc_witness.h:475) leaves canonical CBOR", l1)
