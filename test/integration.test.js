@@ -96,7 +96,7 @@ function haveGo() {
  * Measured: ~18s for all ten fixtures, against a suite whose circuit loads dominate
  * at 45-70s per server.
  */
-function mintFixtures() {
+function mintFixtures(extraArgs = []) {
   const dir = mkdtempSync(join(tmpdir(), '8een-fixtures-'));
   const binary = join(dir, 'mkfixture');
   execFileSync('go', ['build', '-o', binary, '.'], {
@@ -104,7 +104,7 @@ function mintFixtures() {
     env: { ...process.env, CGO_ENABLED: '1' },
     stdio: 'pipe',
   });
-  execFileSync(binary, ['-circuit-dir', CIRCUIT_SOURCE, '-out', dir], { stdio: 'pipe' });
+  execFileSync(binary, ['-circuit-dir', CIRCUIT_SOURCE, '-out', dir, ...extraArgs], { stdio: 'pipe' });
   return dir;
 }
 
@@ -164,6 +164,28 @@ function fixtures() {
 }
 
 /**
+ * The M3 rung-1 fixture set: the SAME matrix, minted under the EU AV docType and
+ * namespace (eu.europa.ec.av.1) instead of ISO mDL. Separate lazy cache so it mints
+ * only if a test that needs it runs, and mints exactly once.
+ *
+ * Why this is the right rung-1 probe, and not merely a happy-path repeat: 8een's
+ * verify() sends the child only {Transcript, ZKDeviceResponseCBOR} (service.js) --
+ * never a docType or namespace -- and findClaim (verdict.js) scans every namespace.
+ * So the prediction is that a real EU-app proof verifies for the same reason a minted
+ * EU-docType one does. Running the whole ACCEPT-and-REJECT matrix under the EU strings
+ * is what turns that prediction into evidence: if any row's verdict differed from its
+ * mDL twin, 8een would have a hidden mDL assumption -- and it would be OUR bug.
+ */
+const EU_DOCTYPE = 'eu.europa.ec.av.1';
+let _euFixtures = null;
+function euFixtures() {
+  if (_euFixtures === null) {
+    _euFixtures = mintFixtures(['-doctype', EU_DOCTYPE, '-namespace', EU_DOCTYPE]);
+  }
+  return _euFixtures;
+}
+
+/**
  * TRUST_RIG drives the circuit/trust-list guards. They verify no proof, so their
  * trust list is upstream's own bundle and they never touch a fixture -- which is what
  * lets them run on a clone with no Go toolchain.
@@ -203,7 +225,16 @@ function oneCircuitDir() {
 
 /** Fixtures are stored as the service's own wire format: base64 in JSON. */
 function proof(name) {
-  const j = JSON.parse(readFileSync(join(fixtures(), `${name}.json`), 'utf8'));
+  return proofFrom(fixtures(), name);
+}
+
+/** The EU-docType twin of proof(), reading from the eu.europa.ec.av.1 set. */
+function proofEU(name) {
+  return proofFrom(euFixtures(), name);
+}
+
+function proofFrom(dir, name) {
+  const j = JSON.parse(readFileSync(join(dir, `${name}.json`), 'utf8'));
   return {
     transcript: Buffer.from(j.Transcript, 'base64'),
     deviceResponse: Buffer.from(j.ZKDeviceResponseCBOR, 'base64'),
@@ -471,6 +502,77 @@ test('the negative matrix (PRD §7.1)', proofSuite, async (t) => {
     const second = await v.check(VALID());
     assert.equal(first.over_threshold, true);
     assert.equal(second.over_threshold, true, 'the verifier has no memory -- by design');
+  });
+});
+
+/**
+ * M3 rung 1 — EU interop, the local half. Does 8een read a credential minted under
+ * the EU AV docType/namespace (eu.europa.ec.av.1) exactly as it reads an ISO mDL one?
+ *
+ * This is the cheap, emulator-free rung that de-risks M3 before any Android work: if
+ * 8een had a hidden mDL assumption, a real EU-app proof would be refused for a reason
+ * that has nothing to do with the proof — and it would be our bug, not the app's. We
+ * find that here, in ~4 minutes, instead of after building the app.
+ *
+ * The set is minted under the EU strings and run through the SAME accept/reject rows
+ * as the mDL matrix above. Non-vacuity is built in: the two reject rows must still
+ * reject, each at its own layer (chain vs ZK), so a pass cannot come from a verifier
+ * that simply accepts everything. If every EU verdict matches its mDL twin, 8een is
+ * docType/namespace-agnostic across the whole surface — the evidence M3 rung 1 needs.
+ *
+ * It does NOT use a real EU-app proof (that is rung 3, the emulator). What it proves
+ * is the necessary local precondition: our reader is not wired to mDL. The circuits
+ * the EU app proves with are already byte-identical to ones 8een pins (EU-STACK-AUDIT
+ * §—), so a matching verdict here makes real-app interop the expected outcome.
+ */
+test('M3 rung 1: the §7.1 matrix under the EU AV docType (eu.europa.ec.av.1)', proofSuite, async (t) => {
+  const service = new VerifierService({
+    binary: join(SERVER_DIR, 'server'),
+    circuitDir: CIRCUIT_SOURCE,
+    caCerts: join(euFixtures(), 'caCerts.pem'),
+    port: 8915,
+  });
+  await service.start();
+  t.after(() => service.stop());
+
+  const v = new Verifier(service, 'age_over_18');
+  assert.equal(service.circuitsLoaded, 17, 'circuits loaded, counted from the child log');
+
+  await t.test('a valid EU-docType proof is accepted', async () => {
+    const r = await v.check(proofEU('valid'));
+    assert.equal(r.ok, true);
+    assert.equal(r.over_threshold, true);
+    assert.equal(r.reason, REASONS.VERIFIED);
+    assert.equal(r.detail, 'age_over_18', 'the claim is found under the EU namespace, not just mDL');
+  });
+
+  // The accept path must not become a rubber stamp under the new docType. An honest
+  // EU-docType minor is still refused for what the credential SAYS -- ok:true (we got
+  // an answer), over_threshold:false -- never conflated with "could not verify".
+  await t.test('an underage EU-docType holder is refused, though the proof is valid', async () => {
+    const r = await v.check(proofEU('underage'));
+    assert.equal(r.ok, true, 'this IS an answer -- the proof verified');
+    assert.equal(r.over_threshold, false);
+    assert.equal(r.reason, REASONS.CLAIM_FALSE);
+  });
+
+  // Reject layer 1: the chain. An EU-docType proof whose issuer is off the trust list
+  // is refused before the ZK layer -- proving the trust boundary is docType-agnostic.
+  await t.test('an EU-docType proof from an untrusted issuer is rejected at the chain', async () => {
+    const r = await v.check(proofEU('untrusted-issuer'));
+    assert.equal(r.ok, true);
+    assert.equal(r.over_threshold, false);
+    assert.equal(r.reason, REASONS.ISSUER_UNTRUSTED);
+  });
+
+  // Reject layer 2: the ZK math. A tampered EU-docType proof is refused by the proof
+  // system itself. Together with the row above, this shows both rejection mechanisms
+  // fire under the EU docType -- the matrix is non-vacuous, not an accept-everything.
+  await t.test('a tampered EU-docType proof is rejected at the ZK layer', async () => {
+    const r = await v.check(proofEU('tampered'));
+    assert.equal(r.ok, true);
+    assert.equal(r.over_threshold, false);
+    assert.equal(r.reason, REASONS.ZK_PROOF_INVALID);
   });
 });
 

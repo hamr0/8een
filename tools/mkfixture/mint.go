@@ -123,14 +123,25 @@ func rawSig(priv *ecdsa.PrivateKey, digest []byte) ([]byte, error) {
 
 // ---- domain constants ----
 
+// docType and namespace default to ISO 18013-5 mDL but are overridable from
+// mkfixture's -doctype / -namespace flags. This is what lets the M3 EU-interop
+// suite mint the SAME fixture matrix under the EU AV docType (eu.europa.ec.av.1)
+// and prove the verifier is docType/namespace-agnostic across accept AND reject —
+// 8een's own verify sends the child neither string (service.js), so a real EU
+// proof must verify for the same reason a minted EU-docType one does. They are
+// var, not const, only so the flag can set them; the byte-layout code reads them
+// through tstr(), which is length-driven, so a shorter docType is handled natively.
+var (
+	docType   = "org.iso.18013.5.1.mDL"
+	namespace = "org.iso.18013.5.1"
+)
+
 const (
 	// circuitHash0 names kZkSpecs[0]: 1 attribute, ZK spec version 7, system
 	// longfellow-libzk-v1. The prebuilt circuit file on disk is named by this hash;
 	// it is also the ZkSystemId the service matches by GetCircuitByName + find_zk_spec.
 	circuitHash0 = "8d079211715200ff06c5109639245502bfe94aa869908d31176aae4016182121"
 
-	docType    = "org.iso.18013.5.1.mDL"
-	namespace  = "org.iso.18013.5.1"
 	elemID     = "age_over_18"
 	validFrom  = "2020-01-01T00:00:00Z" // exactly 20 chars
 	validUntil = "2030-01-01T00:00:00Z" // exactly 20 chars
