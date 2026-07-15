@@ -209,6 +209,44 @@ expired credential is currently refused by nothing we test. Stated here rather t
 left in a comment, because it is a real gap in an age check and the kind of thing
 that quietly never gets done. It is scheduled: **§7.4, M4.**
 
+### 7.1b Known limitation: `mkfixture` docType/namespace are process-global (test-isolation)
+Surfaced by the M3 branch code-review and recorded here rather than silently carried.
+
+**What it is.** `tools/mkfixture` mints the whole fixture matrix under a `docType` and
+`namespace`. As of M3 those two are **package-level `var`s** (`mint.go`), defaulting to
+ISO 18013-5 mDL and overwritten **once**, in `main()`, from the `-doctype` / `-namespace`
+flags. They are `var` rather than `const` for exactly one reason: the M3 rung-1 suite mints
+the *same* matrix under the EU AV docType (`eu.europa.ec.av.1`) to prove the verifier is
+docType/namespace-agnostic (§ M3-EVIDENCE 1.3). They are read in three files — `mint.go`
+(the byte layout), `prove.go` (the cgo prover hands `namespace` to the C library), and
+`fixture.go` — so all of `mint → prove → verify` sees one consistent pair.
+
+**The hazard.** Because they are process-global mutable state, a **future in-process Go
+unit test** that mints under a non-default docType by assigning the global (the tempting,
+obvious way, mirroring `main()`) would leave that value set for **every test that runs after
+it in the same `go test` process**, silently corrupting their byte layout. This is the
+shared-mutable-state trap, not a bug in any code that exists today.
+
+**Why it is not blocking, and not yet fixed.**
+- **No current trigger.** Every test today either uses the default (mDL) or varies the
+  docType through the **subprocess + flags** path (the JS integration harness execs the
+  built binary), which is process-isolated and cannot leak. No Go test sets the globals.
+- **Already guarded if it ever happened.** `layout_test.go` pins the mDL DeviceResponse to
+  **exact bytes**; a leaked docType flips those bytes and the golden test goes red at once,
+  pointing straight at the offender. The failure is loud, not silent-in-production.
+- **The fix is disproportionate to the risk.** Removing the global means threading
+  `docType`/`namespace` as parameters through the byte-layout builders and the **cgo** prover
+  — verified, drift-sensitive code the doctrine explicitly warns against touching without
+  cause (CLAUDE.md: hand-encoded mdoc bytes, "mixing invites silent drift"). Refactoring it
+  to defend a hypothetical the golden test already catches is over-engineering, and the
+  change itself carries more regression risk than the latent smell it removes.
+
+**Decision (owner, M3):** leave as-is; documented, not refactored. **Revisit only if** a
+future task genuinely needs to vary the docType *from within a Go test in the same process*
+— at that point thread the two values as parameters (the golden byte-test makes the refactor
+verifiable) rather than adding a second in-process consumer of the global. Scope: dev-only
+tooling; the shipped package (`src/`, `types/`) is unaffected.
+
 ### 7.3 Unlinkability — honest split
 - **Tested by us (M2, PASSED):** two presentations of the same credential share no
   detectable per-credential identifier. The check is a **black-box byte probe** on the
