@@ -537,8 +537,9 @@ func deviceAuthCose1(transcript []byte) ([]byte, error) {
 		'h', 'e', 'n', 't', 'i', 'c', 'a', 't', 'i', 'o', 'n',
 	}
 	// docType framing is upstream's append_text_len (mdoc_witness.h:417), which tstr
-	// reproduces exactly (0x60|n under 24, else 0x78 n): docType is 21 chars, so
-	// 0x75. tstr is used rather than a local 0x60|len because the latter silently
+	// reproduces exactly (0x60|n under 24, else 0x78 n) — length-driven, so it is
+	// correct for any docType: mDL is 21 chars (header 0x75), eu.europa.ec.av.1 is 17
+	// (0x71). tstr is used rather than a local 0x60|len because the latter silently
 	// emits a headerless 0x78 at len >= 24.
 	da := cat(
 		deviceAuthentication,
@@ -557,10 +558,12 @@ func deviceAuthCose1(transcript []byte) ([]byte, error) {
 	// diverge our preimage from the verifier's and fail every device signature.
 	//
 	// The guard keeps us out of that region entirely rather than relying on it being
-	// self-consistent. With our fixed docType, da = 48 + len(transcript): 52 bytes for
-	// the 4-byte default transcript the golden test pins, 68 for the 20-byte
-	// nonce-bearing transcript every minted fixture now uses. Both clear 24 by a wide
-	// margin, and the guard fires rather than guesses if a caller ever shrinks it.
+	// self-consistent. da = 22 (DeviceAuthentication) + len(transcript) + len(tstr(docType))
+	// + 4. For mDL (21-char docType) that is 48 + len(transcript): 52 bytes for the 4-byte
+	// default transcript the golden test pins, 68 for the 20-byte nonce-bearing transcript
+	// every minted fixture now uses; for eu.europa.ec.av.1 (17-char) it is 44 + len(transcript).
+	// All clear 24 by a wide margin, and the guard fires rather than guesses if a caller ever
+	// shrinks it.
 	if l1 < 24 {
 		return nil, fmt.Errorf(
 			"DeviceAuthentication is %d bytes; under 24 upstream's l2 formula (mdoc_witness.h:475) leaves canonical CBOR", l1)

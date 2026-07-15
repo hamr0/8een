@@ -530,7 +530,7 @@ test('M3 rung 1: the §7.1 matrix under the EU AV docType (eu.europa.ec.av.1)', 
     binary: join(SERVER_DIR, 'server'),
     circuitDir: CIRCUIT_SOURCE,
     caCerts: join(euFixtures(), 'caCerts.pem'),
-    port: 8915,
+    port: 8920,
   });
   await service.start();
   t.after(() => service.stop());

@@ -6,8 +6,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-**No change to the shipped package** — `src/` and `types/` are untouched, dependencies are
-still zero, the tarball is byte-identical. The work here is milestone evidence, dev-only
+**No runtime change** — `src/` and `types/` are byte-identical and dependencies are still
+zero, so `require('zk8een')` behaves exactly as in `0.1.2`. The shipped `README.md` and this
+`CHANGELOG.md` do change (both are in `files`); the work here is milestone evidence, dev-only
 tooling, tests, and a documented corrections pass.
 
 ### M3 — EU interop (PASSED)
