@@ -1,0 +1,59 @@
+diff --git a/reference/verifier-service/server/zk/circuits.go b/reference/verifier-service/server/zk/circuits.go
+index 88c7c45..e135d35 100644
+--- a/reference/verifier-service/server/zk/circuits.go
++++ b/reference/verifier-service/server/zk/circuits.go
+@@ -51,6 +51,38 @@ func GetCircuitByName(name string) (*Circuit, bool) {
+ 	return c, ok
+ }
+ 
++// NormalizeCircuitID maps a wire ZkSystemId to the bare circuit_id that both the
++// circuit map and the C library's find_zk_spec are keyed by. 8een EU-interop shim
++// (M3, docs/02-evidence/M3-EVIDENCE.md §3.4).
++//
++// longfellow's reference convention labels ZkSystemId with the bare 64-hex
++// circuit_id. The EU's Multipaz stack labels it compositely:
++// "<systemName>_<version>_<numAttrs>_<blockEncHash>_<blockEncSig>_<circuit_id>"
++// (multipaz-longfellow LongfellowZkSystem.kt), so a verbatim EU proof arrives with
++// the composite name and misses. The ONLY security-bearing part is the trailing
++// circuit_id: LoadCircuits already refuses any circuit whose content hash != its
++// map key, so every key is a cryptographically verified circuit id. Reducing a
++// composite id to its trailing segment therefore resolves to the SAME verified
++// circuit and can never select a different or weaker one; the prefix is cosmetic.
++//
++// This is applied once at the boundary so the circuit-map lookup and find_zk_spec
++// agree. It touches circuit *resolution* only — never the ZK math, the CBOR parse,
++// or the issuer trust boundary (NO-GO #8 intact). A proof from an untrusted issuer
++// is still rejected at chain validation, independent of this mapping. An id that
++// resolves to no known circuit is returned unchanged, so the normal
++// "invalid circuit id" error still fires.
++func NormalizeCircuitID(id string) string {
++	if _, ok := circuitMap[id]; ok {
++		return id
++	}
++	if i := strings.LastIndex(id, "_"); i >= 0 {
++		if _, ok := circuitMap[id[i+1:]]; ok {
++			return id[i+1:]
++		}
++	}
++	return id
++}
++
+ // LoadCircuits loads circuits from the given directory.
+ func LoadCircuits(dir string) error {
+ 	log.Printf("Reading from dir %v", dir)
+diff --git a/reference/verifier-service/server/zk/proofs.go b/reference/verifier-service/server/zk/proofs.go
+index 0f97224..d94f6b6 100644
+--- a/reference/verifier-service/server/zk/proofs.go
++++ b/reference/verifier-service/server/zk/proofs.go
+@@ -128,6 +128,11 @@ func GetZKSpecs() []ZKSpec {
+ 
+ func VerifyProofRequest(r *VerifyRequest) (bool, error) {
+ 
++	// 8een EU-interop shim: reduce a composite (Multipaz/EU) ZkSystemId to the bare
++	// circuit_id that both the circuit map and find_zk_spec key by. See
++	// NormalizeCircuitID — resolution only, trust and ZK math untouched.
++	r.CircuitID = NormalizeCircuitID(r.CircuitID)
++
+ 	circ, ok := GetCircuitByName(r.CircuitID)
+ 	if !ok {
+ 		return false, fmt.Errorf("invalid circuit id: %s", r.CircuitID)
