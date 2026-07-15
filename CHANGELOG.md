@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) ·
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.3] — 2026-07-15
 
 **No runtime change** — `src/` and `types/` are byte-identical and dependencies are still
 zero, so `require('zk8een')` behaves exactly as in `0.1.2`. The shipped `README.md` and this
@@ -255,5 +255,7 @@ verify"*. It never says *"you are underage"*.
   clock-independent or runs on the real clock. M2's test-CA removes the
   scaffolding.
 
+[0.1.3]: https://github.com/hamr0/8een/releases/tag/v0.1.3
+[0.1.2]: https://github.com/hamr0/8een/releases/tag/v0.1.2
 [0.1.1]: https://github.com/hamr0/8een/releases/tag/v0.1.1
 [0.1.0]: https://github.com/hamr0/8een/releases/tag/v0.1.0
