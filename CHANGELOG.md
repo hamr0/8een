@@ -6,9 +6,27 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-**Docs only. No runtime change** — `src/` and `types/` are untouched, dependencies are
-still zero, the tarball is byte-identical. What changes is what we *claim*, which in
-four places was wrong.
+**No change to the shipped package** — `src/` and `types/` are untouched, dependencies are
+still zero, the tarball is byte-identical. The work here is milestone evidence, dev-only
+tooling, tests, and a documented corrections pass.
+
+### M3 — EU interop (PASSED)
+- **8een verifies a genuine EU-prover-generated ZK proof.** Rung 1: 8een reads the EU AV
+  docType (`eu.europa.ec.av.1`) exactly as an mDL — the full §7.1 matrix passes under the
+  EU docType, and the EU's Longfellow circuits are byte-identical (12/12) to the ones 8een
+  pins. Rung 3: a proof made by the EU's own longfellow prover verifies end-to-end
+  (`verified` / `age_over_18`), rejects when tampered (`zk_proof_invalid`) and when the
+  issuer is untrusted (`issuer_untrusted`). [evidence](docs/02-evidence/M3-EVIDENCE.md).
+- **Finding + bridge: circuit-id convention mismatch.** The Google reference verifier keys
+  circuits by bare `circuit_id`; the EU's Multipaz stack labels them compositely, so a
+  verbatim EU proof missed circuit lookup (`circuit_unavailable`, invariant intact). Bridged
+  with a tracked, label-resolution-only patch (`poc/patches/0002-eu-circuit-id-compat.patch`)
+  that resolves a composite id to its verified trailing `circuit_id` — no crypto, no trust
+  boundary touched (NO-GO #8 intact). A verbatim EU proof now verifies; full regression 24/24.
+- **Dev tooling:** `tools/mkfixture` gained `-doctype` / `-namespace` flags (default ISO mDL).
+- **Scope note:** met via the PRD §6 fallback — the EU's JVM prover, not the shipping phone
+  app (the Android emulator is unusable on this host's kernel). On-phone `ZkSystemId` capture
+  is pending; the bridge is robust to it.
 
 ### Retracted — claims that were false
 - **"The EU app enables ZK proofs only in the demo build."** Both flavors (`Dev`,
