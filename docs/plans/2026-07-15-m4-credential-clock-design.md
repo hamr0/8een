@@ -56,8 +56,14 @@ the engine enforce the bound itself — collapses "expired" and "tampered" into 
 ## 3. The verdict logic
 
 `classify()` gains three injected opts (kept pure — no `Date.now()` inside):
-`requireCurrentValidity` (default `true`), `toleranceMs` (default `300_000` = 5 min),
-and `now` (ms, supplied by the `Verifier.check()` wrapper as `Date.now()`).
+`requireCurrentValidity`, `toleranceMs` (default `300_000` = 5 min), and `now` (ms,
+supplied by the `Verifier.check()` wrapper as `Date.now()`).
+
+**Refinement made during the build:** `requireCurrentValidity` defaults to `false` in
+`classify()` — it is a pure mechanism, so its own callers opt in explicitly and the
+existing direct-classify unit tests are unaffected — while the adopter-facing `Verifier`
+defaults it to `true` (the secure default, PRD §7.4). The policy default lives at the
+`Verifier` boundary, exactly as `requiredClaim` already does.
 
 Two new `REASONS`:
 - `CREDENTIAL_EXPIRED: 'credential_expired'` → `answered(false, …)` i.e. `ok:true,

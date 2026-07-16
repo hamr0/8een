@@ -170,7 +170,7 @@ func packageFixture(m *MintResult, proof []byte, leaf, ca *x509.Certificate, wir
 			}},
 		},
 		MsoX5chain: x5,
-		Timestamp:  nowStr,
+		Timestamp:  m.clock.now,
 	}
 	ddBytes, err := cbor.Marshal(dd)
 	if err != nil {
@@ -298,6 +298,11 @@ type scenarioOpts struct {
 	staleNonce  bool // prove under transcript A, present under B -> device-sig fails
 	mangleCert  bool // corrupt the leaf signature -> chain validation fails
 
+	// clock is the credential's validity clock. The zero value means "fresh": a
+	// real-time clock is filled in by scenario(). The expired-credential fixture is
+	// the one caller that sets it, to a window that closed in the past.
+	clock credClock
+
 	// want is the ZK-layer verdict ONLY (see the expectation doc comment).
 	want expectation
 }
@@ -307,7 +312,12 @@ type scenarioOpts struct {
 // scenario calls for, and then VERIFIES the result against `want` before handing it
 // back. Returns the fixture JSON and the CA DER (for the trust PEM).
 func scenario(circuit []byte, o scenarioOpts) (fixture, caDER []byte, err error) {
-	cred, err := MintCredential(o.credValue)
+	// A zero clock means the default fresh (real-time) credential; only the
+	// expired-credential scenario overrides it.
+	if o.clock == (credClock{}) {
+		o.clock = realTimeClock()
+	}
+	cred, err := MintCredentialClock(o.credValue, o.clock)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: mint: %w", o.name, err)
 	}
@@ -432,12 +442,16 @@ func unlinkabilitySet(circuit []byte) (fixtures map[string][]byte, caDER []byte,
 		return nil, nil, fmt.Errorf("unlinkable: leaf: %w", err)
 	}
 
+	// Fresh (real-time) credential clock, shared by both credentials: the whole set
+	// must ZK-verify AND pass the M4 freshness gate, since the §7.3 check asserts
+	// every presentation is accepted.
+	ck := realTimeClock()
 	f5 := []byte{0xF5}
-	credA, err := MintCredentialUnder(issuer, f5)
+	credA, err := MintCredentialUnderClock(issuer, f5, ck)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unlinkable: credential A: %w", err)
 	}
-	credB, err := MintCredentialUnder(issuer, f5)
+	credB, err := MintCredentialUnderClock(issuer, f5, ck)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unlinkable: credential B: %w", err)
 	}
@@ -680,7 +694,29 @@ func GenFixtures(circuitDir, outDir string) error {
 		return err
 	}
 
-	// 8. the unlinkability set (PRD §7.3) — three presentations under one issuer.
+	// 8. expired-credential — a valid over-18 proof from a TRUSTED issuer whose
+	//    credential validity window CLOSED in the past. Its circuit `now` sits INSIDE
+	//    that past window, so longfellow's own validFrom<=now<=validUntil check passes
+	//    and the raw verifier ACCEPTS it (want: expectAccept). That acceptance IS the
+	//    bug PRD §7.1a names: the credential clock is the prover's to declare, and the
+	//    ZK layer never checks it against real time. Only the M4 freshness gate
+	//    (src/verdict.js), which bounds this `now` against the real wall clock, can
+	//    catch it — and here that `now` is years stale. The x509 chain is on the real
+	//    clock (certWindow) and valid, so rejection cannot come from there either: this
+	//    fixture reaches the accept path and is stopped by nothing below M4.
+	fx, caDER, err = scenario(circuit, scenarioOpts{
+		name: "expired-credential", credValue: f5, wireValue: f5,
+		clock: expiredClock(), want: expectAccept,
+	})
+	if err != nil {
+		return err
+	}
+	trusted = append(trusted, caDER)
+	if err := write("expired-credential", fx); err != nil {
+		return err
+	}
+
+	// 9. the unlinkability set (PRD §7.3) — three presentations under one issuer.
 	unlinkable, caDER, err := unlinkabilitySet(circuit)
 	if err != nil {
 		return err

@@ -9,9 +9,19 @@ it should be."
 ## What ran (reproducible)
 
 1. `git clone --depth 1 https://github.com/google/longfellow-zk` into `poc/`
-   — upstream HEAD `d8ad8f65187c7c364a3c2181ad484bcab03f0ec2`; the POC patch
-   is preserved as `poc/patches/0001-zkverify-fake-time.patch` (the clone
-   itself is gitignored). Negative fixtures regenerate byte-identically via
+   — upstream HEAD `d8ad8f65187c7c364a3c2181ad484bcab03f0ec2`; the clone itself is
+   gitignored, and every change to it is preserved as a tracked patch in
+   `poc/patches/`, applied in order after cloning
+   (`git -C poc/longfellow-zk apply poc/patches/000*.patch`):
+   - `0001-zkverify-fake-time.patch` — POC-only x509 clock pin (inert unless
+     `ZKVERIFY_FAKE_TIME` is set; nothing sets it since M2).
+   - `0002-eu-circuit-id-compat.patch` — M3 EU circuit-id bridge.
+   - `0003-m4-echo-verified-timestamp.patch` — M4 freshness: echoes the verified
+     credential timestamp. Required by the M4 freshness test and by any adopter running
+     the currency gate (on by default); see `docs/02-evidence/M4-EVIDENCE.md`.
+
+   Rebuild the Go server after applying (`CGO_ENABLED=1 go build -o server .` in
+   `reference/verifier-service/server`). Negative fixtures regenerate byte-identically via
    `node poc/make-fixtures.mjs` (verified: sha256 of regenerated files
    matches the originals used in the runs below)
 2. Deps: `dnf install clang libzstd-devel openssl-devel google-benchmark-devel gtest-devel libpfm-devel golang`

@@ -73,7 +73,7 @@ poc/M0-EVIDENCE.md
 docs/02-evidence/M1-EVIDENCE.md
 ```
 
-The vendored longfellow-zk clone and every fixture are gitignored by design; everything needed to re-materialize them is committed (upstream SHA `d8ad8f65`, `poc/patches/0001-zkverify-fake-time.patch`).
+The vendored longfellow-zk clone and every fixture are gitignored by design; everything needed to re-materialize them is committed (upstream SHA `d8ad8f65`, plus the tracked patch series in `poc/patches/`).
 
 Since **M2** the integration suite mints its own credentials at run time via `tools/mkfixture` — a valid proof, an underage one, a wrong-issuer one, a tampered one, a proof replayed into another session, a mangled chain, a relabelled claim, and three presentations for the unlinkability check. Running it therefore needs the clone built **with its `install/` prefix** (mkfixture links longfellow via cgo) **and a Go toolchain**; the circuit and trust-list guards need neither and run regardless. No key material or fixture is ever written to the tree (PRD §10).
 

@@ -29,27 +29,53 @@ export class Verifier {
   #service;
   /** @type {string} */
   #requiredClaim;
+  /** @type {boolean} */
+  #requireCurrentValidity;
+  /** @type {number} */
+  #toleranceMs;
 
   /**
    * @param {VerifierService} service       a service you have already started
    * @param {string} requiredClaim          e.g. `age_over_18`
+   * @param {{requireCurrentValidity?: boolean, toleranceMs?: number}} [policy]
    */
-  constructor(service, requiredClaim) {
+  constructor(service, requiredClaim, policy = {}) {
+    const toleranceMs = policy.toleranceMs ?? 300_000;
+    // Validate here, like the threshold: a bad tolerance must fail LOUD at construction,
+    // not silently disable the freshness gate at verify time (classify also fails closed
+    // on it, but the adopter should learn about their config error immediately).
+    if (typeof toleranceMs !== 'number' || !Number.isFinite(toleranceMs) || toleranceMs < 0) {
+      throw new TypeError(`toleranceMs must be a non-negative finite number, got ${policy.toleranceMs}`);
+    }
     this.#service = service;
     this.#requiredClaim = requiredClaim;
+    this.#requireCurrentValidity = policy.requireCurrentValidity ?? true;
+    this.#toleranceMs = toleranceMs;
   }
 
   /**
    * Provision circuits first (see {@link provision}), then start one of these and
    * keep it: the circuit load takes 44-73s, so it is a boot cost, not a per-request one.
    *
-   * @param {import('./types.js').ServiceInit & {threshold?: number}} opts
+   * @param {import('./types.js').ServiceInit & {threshold?: number,
+   *   requireCurrentValidity?: boolean, toleranceMs?: number}} opts
    *   `caCerts` IS THE TRUST BOUNDARY: a proof is accepted only if its issuer chains
    *   to one of those roots. Choose it deliberately -- it is the whole security
    *   decision. `vicalUrl` opts in to a network-fetched issuer trust list (ISO
    *   18013-5 VICAL); the default is NONE, because a trust boundary that changes
    *   with the weather is not a trust boundary. `threshold` is the age in "over N"
    *   (PRD D6, default 18); the output stays a single bit either way.
+   *
+   *   `requireCurrentValidity` (default `true`) refuses a proof whose credential
+   *   validity window is not current -- an expired credential is a real "no"
+   *   (`over_threshold:false`, reason `credential_expired`), and an unreadable
+   *   presentation date is `ok:false` (`freshness_unknown`), never a "no" (PRD §7.4).
+   *   Turn it OFF only if the site cares about age alone and not credential currency:
+   *   an expired credential STILL proves the holder is an adult (age does not run
+   *   backwards), so age-gates may accept it while KYC-style flows must not. Replay
+   *   defence is separate (the gate's per-session nonce), so this does not affect it.
+   *   `toleranceMs` (default 5 min) is how far the presentation timestamp may sit
+   *   from the real clock.
    * @returns {Promise<Verifier>}
    */
   static async start(opts) {
@@ -59,7 +85,10 @@ export class Verifier {
     }
     const service = new VerifierService(opts);
     await service.start();
-    return new Verifier(service, `age_over_${threshold}`);
+    return new Verifier(service, `age_over_${threshold}`, {
+      requireCurrentValidity: opts?.requireCurrentValidity,
+      toleranceMs: opts?.toleranceMs,
+    });
   }
 
   get ready() {
@@ -82,7 +111,12 @@ export class Verifier {
    * @returns {Promise<import('./types.js').Verdict>}
    */
   async check(proof) {
-    return classify(await this.#service.verify(proof), { requiredClaim: this.#requiredClaim });
+    return classify(await this.#service.verify(proof), {
+      requiredClaim: this.#requiredClaim,
+      requireCurrentValidity: this.#requireCurrentValidity,
+      toleranceMs: this.#toleranceMs,
+      now: Date.now(),
+    });
   }
 
   /** @returns {Promise<void>} */

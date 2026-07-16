@@ -114,12 +114,14 @@ The closed set of `reason` values. Branch on these, never on `detail`.
 | `true` | `proof_malformed` | Unparseable envelope or certificate chain. |
 | `true` | `claim_absent` | Valid proof, but it does not attest the claim you required. |
 | `true` | `claim_false` | The claim is present and it is `false`. Under the threshold. |
+| `true` | `credential_expired` | Valid proof, but the credential is not current (only when `requireCurrentValidity`). A real "no" — *not* under-age. |
 | `false` | `service_not_ready` | Still loading circuits, or not running. |
 | `false` | `service_unreachable` | The child is not answering. |
 | `false` | `service_timeout` | It answered too slowly. |
 | `false` | `circuit_unavailable` | Misconfigured — we cannot answer, and this is **not** a verdict. |
 | `false` | `response_unintelligible` | We did not understand the response. Refusing to guess. |
 | `false` | `invalid_request` | You handed us something that is not a proof. |
+| `false` | `freshness_unknown` | Currency required, but no presentation date could be read. We could not judge — **not** a "no". |
 
 ### `classify(raw, opts?) → Verdict`
 
@@ -134,6 +136,8 @@ different transport. Never throws, whatever you hand it.
 | `circuitDir` | *required* | Directory of circuit files. Use `provision()`. |
 | `caCerts` | *required* | **PEM bundle of trusted issuer roots. THE TRUST BOUNDARY.** |
 | `threshold` | `18` | The age in "over N". The output stays one bit. |
+| `requireCurrentValidity` | `true` | Refuse a credential whose validity window is not current. Expired → `credential_expired` (a real "no"); unreadable date → `freshness_unknown` (`ok:false`). See [Credential currency](#credential-currency). |
+| `toleranceMs` | `300000` | How far the presentation date may sit from the real clock (5 min). Only used when `requireCurrentValidity`. |
 | `vicalUrl` | **none** | Opt in to a network-fetched issuer trust list (VICAL). |
 | `host` | `127.0.0.1` | Loopback, deliberately. |
 | `port` | `8899` | |
@@ -170,6 +174,27 @@ choosing to trust whoever it serves.
 
 If `start()` throws, read the message. It is telling you that a verifier you were
 about to trust would have been quietly wrong.
+
+## Credential currency
+
+By default (`requireCurrentValidity: true`) 8een refuses a credential whose validity
+window is not current. This is a separate question from age: a proof attests *"at time
+T, the holder was over 18,"* and 8een confirms **T is really now** (within `toleranceMs`,
+default 5 min) before accepting. Without this the ZK layer checks the window against a
+time the *prover* supplies, so an expired credential would verify.
+
+- **Expired / stale** → `ok:true, over_threshold:false`, `credential_expired`. A real "no"
+  — distinct from `claim_false` (a genuinely under-age holder). Deny entry; do not say
+  "expired ID" unless your flow wants to.
+- **Date could not be read** → `ok:false`, `freshness_unknown`. We could not judge, so we
+  refuse to — **never** reported as a "no". Fail closed on `ok:false`, as always.
+
+**Turn it off (`requireCurrentValidity: false`) only if you care about age alone.** An
+expired ID still *proves adulthood* — age does not run backwards — so an age-gate may
+accept it, while a KYC-style flow that needs a *current* government credential must not.
+This does **not** affect replay: a byte-identical proof replayed in its own session is
+still accepted (the verifier is stateless — bind a per-visit nonce into the transcript
+yourself; see the note on freshness).
 
 ## Architecture
 

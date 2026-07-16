@@ -1,0 +1,28 @@
+diff --git a/reference/verifier-service/server/handler.go b/reference/verifier-service/server/handler.go
+index 82bc20a..b964758 100644
+--- a/reference/verifier-service/server/handler.go
++++ b/reference/verifier-service/server/handler.go
+@@ -50,6 +50,14 @@ type ZKVerifyResponse struct {
+ 	Status  bool            `json:"Status"`
+ 	Claims  zk.IssuerSigned `json:"Claims,omitempty"`
+ 	Message string          `json:"Message,omitempty"`
++	// Now is the credential-validity timestamp the circuit verified against, echoed
++	// back VERBATIM. 8een M4 freshness shim (poc/patches/0003): the ZK layer checks
++	// validFrom<=Now<=validUntil against a Now the PROVER supplies, and never against
++	// real time, so an expired credential verifies (PRD §7.1a). Reporting Now lets the
++	// relying party (src/verdict.js) bound it against its own clock and refuse a stale
++	// presentation. This only REPORTS; it decides nothing, and touches no trust or ZK
++	// math (NO-GO #8 intact). Meaningful only when Status is true.
++	Now string `json:"Now,omitempty"`
+ }
+ 
+ type apiFunc func(http.ResponseWriter, *http.Request) error
+@@ -87,7 +95,7 @@ func (s *Server) handleZKVerify(w http.ResponseWriter, r *http.Request) error {
+ 	vreq.Transcript = request.Transcript
+ 
+ 	ok, err := zk.VerifyProofRequest(vreq)
+-	resp := ZKVerifyResponse{Status: ok, Claims: vreq.Claims}
++	resp := ZKVerifyResponse{Status: ok, Claims: vreq.Claims, Now: vreq.Now}
+ 	if err != nil {
+ 		s.logger.Error("invalid proof", "err", err)
+ 		resp.Message = err.Error()

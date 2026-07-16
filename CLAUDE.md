@@ -81,12 +81,19 @@ half-load, and prove it can't.
   `examples/post1.json` — its chain expired 2026-05-07, so on the real clock every
   post1-derived fixture is refused at *chain validation* and never reaches the layer
   you think you are testing. Mint a fixture instead.
-  - **The circuit's own clock is still frozen**: `nowStr` in `mint.go` is a hardcoded
-    20-char timestamp, and the MSO validity window is a lexical string compare
-    against it. Credential expiry is therefore NOT covered by any test. Only the
-    *x509* clock is real. Do not let "M2 runs on the real clock" grow into a claim
-    that it does. **Scheduled: PRD §7.4, owned by M4** (with the nonce — same
-    question, two halves). Named as a gap in the M2 matrix at PRD §7.1a.
+  - **Credential expiry is now covered (M4 piece 1, 2026-07-15).** The build found the
+    real shape: the verifier checked the MSO window against a `now` the **prover**
+    supplies (`poc/…/zk/cbor.go:191`), never real time, so an expired credential
+    verified. Fixed by echoing that timestamp (patch 0003) and bounding it against the
+    real clock in `src/verdict.js` (`requireCurrentValidity`, default on). `mkfixture`
+    now mints under a real-time clock (fresh) or a past one (`expired-credential`); the
+    frozen `frozenClock` remains only for the deterministic layout tests. The circuit's
+    *internal* clock is still frozen and deliberately untouched — we bound its input
+    from outside, we never change its maths (NO-GO #8). See `docs/02-evidence/M4-EVIDENCE.md`.
+  - **Freshness's OTHER half — the per-session nonce — is still open (M4 piece 2).** The
+    verifier remains stateless; a byte-identical replay in its own session is still
+    accepted by design. **8een is not replay-safe. Do not describe it as such**, and do
+    not "fix" replay in the verify module.
 - **Measure before you write a number.** "A few seconds" was wrong by 10× once
   already and had to be retracted in writing.
 

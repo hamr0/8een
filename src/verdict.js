@@ -23,6 +23,10 @@ export const REASONS = Object.freeze({
   PROOF_MALFORMED: 'proof_malformed',
   CLAIM_ABSENT: 'claim_absent',
   CLAIM_FALSE: 'claim_false',
+  // A cryptographically valid proof of the required claim, but the credential's own
+  // validity window is not current: the presentation is stale/expired. A real "no"
+  // (over_threshold:false), distinct from CLAIM_FALSE (a genuinely under-age holder).
+  CREDENTIAL_EXPIRED: 'credential_expired',
 
   // We got no answer.
   SERVICE_UNREACHABLE: 'service_unreachable',
@@ -31,6 +35,10 @@ export const REASONS = Object.freeze({
   CIRCUIT_UNAVAILABLE: 'circuit_unavailable',
   RESPONSE_UNINTELLIGIBLE: 'response_unintelligible',
   INVALID_REQUEST: 'invalid_request',
+  // Currency was required, but the verifier reported no timestamp to check (or no
+  // clock was supplied). We could not judge freshness, so we refuse to judge at all
+  // -- never guess "expired". A missing reading is `ok:false`, never a "no".
+  FRESHNESS_UNKNOWN: 'freshness_unknown',
 });
 
 /**
@@ -76,12 +84,26 @@ const unanswerable = (reason, detail) => ({ ok: false, over_threshold: null, rea
  *   but typed `*` deliberately, because this is the never-throws boundary. It is
  *   handed whatever the wire produced, including garbage, and must return a
  *   verdict for all of it rather than trusting its input's shape.
- * @param {{requiredClaim?: string}} [opts]  The claim the caller requires, e.g.
- *   `age_over_18`. PRD D6: the threshold is configurable; the output stays one bit.
+ * @param {{requiredClaim?: string, requireCurrentValidity?: boolean,
+ *   toleranceMs?: number, now?: number}} [opts]
+ *   `requiredClaim` is the claim the caller requires, e.g. `age_over_18` (PRD D6:
+ *   the threshold is configurable; the output stays one bit).
+ *
+ *   `requireCurrentValidity` gates an otherwise-accepted proof on the credential's
+ *   own validity window being current. It defaults to `false` HERE -- classify is a
+ *   pure mechanism, and its own callers opt in explicitly -- while the adopter-facing
+ *   `Verifier` defaults it to `true` (the secure default; PRD §7.4). When on, `now`
+ *   (ms since epoch, injected so this stays pure) is compared to the presentation
+ *   timestamp the verifier echoes, within `toleranceMs` (default 5 min). Stale ->
+ *   `credential_expired` (a real "no"); no timestamp or no clock -> `freshness_unknown`
+ *   (`ok:false`, never a "no").
  * @returns {import('./types.js').Verdict}
  */
 export function classify(raw, opts = {}) {
   const requiredClaim = opts.requiredClaim ?? 'age_over_18';
+  const requireCurrentValidity = opts.requireCurrentValidity ?? false;
+  const toleranceMs = opts.toleranceMs ?? 300_000;
+  const now = opts.now;
 
   if (!raw || typeof raw !== 'object') {
     return unanswerable(REASONS.RESPONSE_UNINTELLIGIBLE, `not an outcome: ${typeof raw}`);
@@ -188,9 +210,98 @@ export function classify(raw, opts = {}) {
     return unanswerable(REASONS.RESPONSE_UNINTELLIGIBLE, `cannot read ${requiredClaim}`);
   }
 
-  return bit
-    ? answered(true, REASONS.VERIFIED, requiredClaim)
-    : answered(false, REASONS.CLAIM_FALSE, `${requiredClaim} is false`);
+  if (!bit) {
+    return answered(false, REASONS.CLAIM_FALSE, `${requiredClaim} is false`);
+  }
+
+  // The maths checked out AND the required claim is true. One question remains, and
+  // only if the caller requires it: is the credential still valid RIGHT NOW? The ZK
+  // layer already checked validFrom <= now <= validUntil -- but against a `now` the
+  // PROVER supplied (poc/.../zk/cbor.go:191), never the real clock, so an expired
+  // credential passes it (PRD §7.1a). We bound that timestamp against our own clock.
+  if (requireCurrentValidity) {
+    const stale = freshnessGate(body, now, toleranceMs);
+    if (stale) return stale;
+  }
+  return answered(true, REASONS.VERIFIED, requiredClaim);
+}
+
+/**
+ * The credential-currency gate. Returns a rejecting Verdict if the presentation is
+ * stale or unjudgeable, or `null` if it is fresh (the caller then accepts).
+ *
+ * Parsing `body.Now` is `Date.parse()` of an RFC3339 string the verifier already
+ * decoded from CBOR and echoed -- NOT a CBOR parse, so NO-GO #8 is intact.
+ *
+ * A missing timestamp or a missing clock is `freshness_unknown` (`ok:false`), never
+ * `credential_expired`: if we could not read the date we refuse to judge, rather than
+ * guess a "no" about a person. That is the §1 invariant on this new surface.
+ *
+ * @param {{Now?: unknown}} body
+ * @param {number|undefined} now  ms since epoch, or undefined if none was supplied
+ * @param {number} toleranceMs
+ * @returns {import('./types.js').Verdict|null}
+ */
+function freshnessGate(body, now, toleranceMs) {
+  const stamp = parseTimestamp(body.Now);
+  if (stamp === undefined) {
+    return unanswerable(
+      REASONS.FRESHNESS_UNKNOWN,
+      'currency required, but the verifier reported no presentation timestamp',
+    );
+  }
+  if (typeof now !== 'number' || !Number.isFinite(now)) {
+    return unanswerable(
+      REASONS.FRESHNESS_UNKNOWN,
+      'currency required, but no real-clock reference was supplied to check against',
+    );
+  }
+  // A malformed tolerance must fail CLOSED, never silently disable the gate: `x > NaN`
+  // is false, so a NaN/garbage tolerance would let a years-stale credential through as
+  // current. This is a config value, and the doctrine is: do not trust one. Refuse to
+  // judge rather than wave it past.
+  if (typeof toleranceMs !== 'number' || !Number.isFinite(toleranceMs) || toleranceMs < 0) {
+    return unanswerable(
+      REASONS.FRESHNESS_UNKNOWN,
+      `currency required, but the freshness tolerance is not a usable number (${String(toleranceMs)})`,
+    );
+  }
+
+  // Signed, because the two directions are DIFFERENT answers. Past beyond tolerance is
+  // a stale/expired presentation -- a real "no" about currency. FUTURE beyond tolerance
+  // means the credential is valid at a time we have not reached (a fast device clock, or
+  // a future-dated proof): it is NOT expired, and calling a currently-valid adult
+  // "expired" would be a false no. We cannot confirm currency, so we refuse to judge
+  // (ok:false) rather than assert one -- the §1 invariant on this surface.
+  const skewMs = now - stamp;
+  if (skewMs > toleranceMs) {
+    return answered(
+      false,
+      REASONS.CREDENTIAL_EXPIRED,
+      `presentation dated ${String(body.Now)} is ${Math.round(skewMs / 1000)}s stale (tolerance ${Math.round(toleranceMs / 1000)}s)`,
+    );
+  }
+  if (skewMs < -toleranceMs) {
+    return unanswerable(
+      REASONS.FRESHNESS_UNKNOWN,
+      `presentation dated ${String(body.Now)} is ${Math.round(-skewMs / 1000)}s in the future (tolerance ${Math.round(toleranceMs / 1000)}s); cannot confirm currency`,
+    );
+  }
+  return null;
+}
+
+/**
+ * Parse the echoed presentation timestamp (a 20-char RFC3339 tdate) to ms since
+ * epoch, or undefined if absent/unreadable. Not a CBOR parser (NO-GO #8): the
+ * verifier already decoded the CBOR and handed us a JSON string.
+ *
+ * @param {unknown} v
+ * @returns {number|undefined}
+ */
+function parseTimestamp(v) {
+  if (typeof v !== 'string') return undefined;
+  const ms = Date.parse(v); // Date.parse('') and any non-date string are already NaN
+  return Number.isNaN(ms) ? undefined : ms;
 }
 
 /** Claims is map[namespace][]{ElementIdentifier, ElementValue} (zk.IssuerSigned). */
