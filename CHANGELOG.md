@@ -4,6 +4,35 @@ All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) ·
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-07-16
+
+**Runtime change:** the HTTP gate, M4 piece 3 of 3 — the "adopt without thinking" layer,
+**replay-safe by default**. M4 (the gate) is now complete: credential currency (0.2.0),
+single-use nonce (0.3.0), and now the endpoint/middleware/demo that wires them for a site.
+
+### M4 — the HTTP gate (piece 3, PASSED)
+- **`startGate(opts)`** — starts the verifier and returns two HTTP routes over it, with
+  `requireSingleUse` defaulting **on** (it defaults off on the bare `Verifier`). Running
+  replay-open is a deliberate `requireSingleUse: false`; single-use on without a
+  `challengeSecret` and a `nonceStore`/`store:'memory'` **throws before the circuit load**,
+  never fails open. Returns `{handler, express, verifier, stop}`.
+- **`createGate({verifier, ...})`** — the gate over a verifier you started yourself.
+- **Two routes.** `GET {basePath}/challenge` → `{nonce, transcript, expiresAt}` (base64url);
+  `POST {basePath}/verify` with `{transcript, deviceResponse}` (base64url) → the `Verdict`.
+  **`ok:true` → HTTP 200** (read `over_threshold` in the body); **`ok:false` → HTTP 503**
+  ("could not verify — re-challenge"), never a status that reads as "denied person".
+- **Framework-agnostic.** `handler` is a bare `node:http` listener; `express()` is a
+  middleware (`app.use(gate.express())`). Zero runtime dependencies still holds (NO-GO #9).
+- **AGENT_RULES invariants on the wire:** a bounded request body (413 over `maxBodyBytes`,
+  default 1 MB), a per-IP rate limiter (default 60/min, `rateLimit:false` to disable),
+  loopback in every example, no leaked internals. Closes PRD §6 / §7.4a end-to-end.
+- **`demo/`** (repo-only, not shipped): a runnable, fully-real showcase — a real proof is
+  accepted, its byte-identical replay is refused (`503 replay_detected`), and a fresh
+  session is accepted again. Boots against the built POC verifier; needs no phone.
+- **Owner directive (M4 piece 3):** the gate flips the primitive's default-off stance so
+  the lazy path is the safe path. The bare `Verifier` default stays off (a library
+  primitive cannot invent a shared secret and store).
+
 ## [0.3.0] — 2026-07-16
 
 **Runtime change:** opt-in replay defence (the single-use nonce), M4 piece 2 of 3. The

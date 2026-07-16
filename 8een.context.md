@@ -17,12 +17,16 @@ mean.
 
 **Is not — and this matters more than anything else on this page:**
 
-- **Not a full gate.** It does not manage sessions, cookies, or rate limits. It
-  *can* now issue and spend single-use nonces (opt-in `requireSingleUse`), but you
-  still own the session plumbing and the shared store it spends against.
-- **Not replay-safe by default.** Replay defence is opt-in. With `requireSingleUse`
-  off (the default), a byte-identical proof replayed in its own session is accepted.
-  See [Threat model](#threat-model-summary). This is the one that will bite you.
+- **The bare `Verifier` is not a full gate.** It does not manage sessions, cookies, or
+  rate limits. It *can* issue and spend single-use nonces (opt-in `requireSingleUse`),
+  but you still own the shared store it spends against. **The `startGate()` HTTP gate
+  ([Public API](#startgateopts--promisehandler-express-verifier-stop)) is the full
+  drop-in** — routes, rate limiting, and replay defence wired for you.
+- **The bare `Verifier` is not replay-safe by default** (`requireSingleUse` off): a
+  byte-identical proof replayed in its own session is accepted. **The gate flips this —
+  `startGate()` is replay-safe by default** and refuses to boot single-use-on without a
+  secret and store. So: use the gate, or turn `requireSingleUse` on yourself. Shipping
+  the bare verifier as an age gate is the mistake that will bite you.
 - **Not an issuer.** It mints nothing and stores nothing.
 - **Not usable standalone yet.** It drives a longfellow verifier binary that this
   package does not ship. See [Constraints](#constraints).
@@ -109,6 +113,38 @@ A `nonceStore` for single-process **development only**. It is not shared across
 processes, so it does **not** stop replays behind multiple replicas — use Redis
 (`SET key NX PX ttl`) or an equivalent in production. You must construct it by name;
 8een never falls back to it silently.
+
+### `startGate(opts) → Promise<{handler, express, verifier, stop}>`
+
+The drop-in HTTP gate, **replay-safe by default**. Takes the same options as
+`Verifier.start` plus the gate options below, starts the verifier, and returns two
+HTTP routes over it. `requireSingleUse` defaults **`true`** here (it defaults `false`
+on the bare `Verifier`); running replay-open is a deliberate `requireSingleUse: false`.
+With single-use on it needs a `challengeSecret` (≥16 bytes) and either a `nonceStore`
+or `store: 'memory'` (single-process dev); missing either **throws before the circuit
+load**, never fails open.
+
+- `GET {basePath}/challenge` → `{nonce, transcript, expiresAt}` (base64url). Hand
+  `transcript` to the wallet.
+- `POST {basePath}/verify` — body `{transcript, deviceResponse}` (base64url) → the
+  `Verdict` as JSON. **`ok:true` → HTTP 200** (read `over_threshold` in the body);
+  **`ok:false` → HTTP 503** ("could not verify"), never a "denied person" status.
+- `handler` — a bare `node:http` request listener. `express()` — a middleware; mount
+  at root (`app.use(gate.express())`), it owns `basePath` and calls `next()` for
+  everything else.
+- Gate options: `basePath` (default `/8een`), `maxBodyBytes` (default 1 MB),
+  `rateLimit` (`{limit, windowMs}`, default 60/min per IP; `false` to disable),
+  `trustProxy` (default `false` — read `X-Forwarded-For` only behind a vetted proxy).
+
+### `createGate({verifier, ...}) → {handler, express}`
+
+The gate over a verifier you already started yourself. `startGate` is this plus the
+replay-safe-by-default boot; reach for `createGate` only if you manage the `Verifier`
+lifecycle directly. **Replay-safe by default here too:** it throws unless the verifier
+reports `requiresSingleUse` (i.e. was started with `requireSingleUse`), or you pass
+`allowReplay: true` to deliberately wrap a replay-open verifier — in which case
+`/challenge` answers `404 challenge_disabled`. A malformed `rateLimit`, `maxBodyBytes`,
+or `maxBodyReadMs` throws rather than silently un-bounding the endpoint.
 
 ### `verifier.stop() → Promise<void>`
 
@@ -258,8 +294,16 @@ across replicas.
 
 **With it off**, skip nonce bookkeeping entirely and a fourteen-year-old walks in
 with a borrowed proof file, while 8een correctly reports "valid" every single time.
-**A gate built on this module without single-use is not an age gate** unless you do
-the equivalent nonce bookkeeping yourself.
+**A gate built on the bare `Verifier` without single-use is not an age gate** unless
+you do the equivalent nonce bookkeeping yourself.
+
+**The `startGate()` HTTP gate does that bookkeeping for you, and defaults it ON.** It
+issues and spends the nonce across its two routes, and refuses to boot if single-use is
+on without a secret and store — so "adopt without reading this section" lands on the
+safe path, not the footgun. Running it replay-open is a deliberate, typed
+`requireSingleUse: false`. The bare-`Verifier` default stays OFF because a library
+primitive cannot invent a shared secret and store; the gate, one layer up, can demand
+them.
 
 Other properties:
 

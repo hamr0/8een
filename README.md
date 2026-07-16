@@ -37,9 +37,9 @@ A working ZK verifier does exist: one server-side component, a vendored copy of 
 
 Every claim above is pinned to a file, a line, and a commit in [`docs/02-evidence/EU-STACK-AUDIT.md`](docs/02-evidence/EU-STACK-AUDIT.md) — including four earlier claims of ours that the audit **retracted**.
 
-## Quick start (honest M1 edition)
+## Quick start
 
-There is still nothing worth `npm install`-ing — 8een is a module on a ladder, not yet a package, and the gate that a site actually drops in arrives at M4. The name `zk8een` is reserved on npm, but the only version published there is an empty `0.0.0` placeholder; the first real release is `0.1.0`. What exists today is the verify module: zero runtime dependencies, vanilla Node ≥22.
+There is still nothing worth `npm install`-ing — 8een drives a longfellow verifier binary it does not yet ship, so the published package cannot verify a proof on its own. The name `zk8een` is reserved on npm, but the only version published there is an empty `0.0.0` placeholder. What exists today: the verify module (below) and the HTTP gate that drops in front of it ([further down](#the-gate--replay-safe-by-default)). Zero runtime dependencies, vanilla Node ≥22.
 
 ```js
 import { Verifier, provision } from 'zk8een';
@@ -62,7 +62,40 @@ else denyEntry();                         // a real, cryptographic no
 
 **`ok` and `over_threshold` are different questions.** `ok` says whether we got an answer at all; `over_threshold` says what the answer was. When `ok` is false, `over_threshold` is `null` — never `false`. A verifier that cannot verify is broken, and a broken verifier reporting "no" would turn away every legitimate adult while sounding exactly like a working one.
 
-**This module does not stop replay, and does not pretend to.** It is stateless: hand it the same valid proof a thousand times and it will say "valid" a thousand times, because it is. Freshness is the relying party's job — a nonce per visit, bound into the transcript, spent once. That is the gate (M4). Shipping this alone as an age gate would verify beautifully and still admit a fourteen-year-old holding a borrowed proof.
+**The bare `Verifier` does not stop replay, and does not pretend to.** It is stateless: hand it the same valid proof a thousand times and it will say "valid" a thousand times, because it is. Freshness is the relying party's job — a nonce per visit, bound into the transcript, spent once. Shipping the bare verifier alone as an age gate would verify beautifully and still admit a fourteen-year-old holding a borrowed proof. **So don't — use the gate below, which does the nonce for you.**
+
+## The gate — replay-safe by default
+
+`startGate()` is the drop-in for a real site: it starts the verifier and gives you two HTTP routes, and — unlike the bare `Verifier` — it is **replay-safe by default**. It issues a one-time nonce and spends it for you; running replay-open takes a deliberate `requireSingleUse: false`, and if single-use is on without the secret and store it needs, it refuses to boot (before the slow circuit load, not after).
+
+```js
+import { startGate } from 'zk8een';
+import express from 'express';
+
+const gate = await startGate({
+  binary: './longfellow-verifier',
+  circuitDir: './circuits',
+  caCerts: './issuers.pem',               // THE trust boundary — choose it deliberately
+  challengeSecret: process.env.EIGHTEEN_SECRET,  // ≥16 bytes, stable, shared across replicas
+  store: 'memory',                        // single-process DEV shortcut; use a Redis-backed
+                                          // nonceStore ({ spend(key, ttlMs) }) in production
+});
+
+const app = express();
+app.use(gate.express());                  // mounts GET /8een/challenge + POST /8een/verify
+app.listen(3000, '127.0.0.1');            // loopback; never 0.0.0.0 unless deliberately public
+```
+
+No Express? The same gate is a bare `node:http` handler:
+
+```js
+import http from 'node:http';
+http.createServer(gate.handler).listen(3000, '127.0.0.1');
+```
+
+The browser flow is two round-trips: `GET /8een/challenge` returns a nonce the wallet stamps its proof with; `POST /8een/verify` with `{ transcript, deviceResponse }` (base64url) returns the verdict. **`ok:true` → HTTP 200** (branch on `over_threshold` in the body); **`ok:false` → HTTP 503** ("could not verify — re-challenge"), never a status that reads as "denied person". A recorded proof replayed → `503 { ok:false, over_threshold:null, reason:"replay_detected" }`.
+
+A runnable, fully-real version of exactly this — accept, then replay-refused, then fresh-accept — is in [`demo/`](demo/) (`node demo/server.js`).
 
 ```bash
 # what this is and deliberately is not (incl. the NO-GO table)

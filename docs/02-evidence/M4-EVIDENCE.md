@@ -248,3 +248,97 @@ it (the `stale-nonce` fixture has always proven the binding).
 - **The real multi-party OpenID4VP transcript.** 8een recognizes its own issued frame; wiring
   a wallet-built handover is integration work for the endpoint piece (§6, §7.2).
 - **The endpoint, middleware, demo site (§6, §7.2).** Piece 3 — the last of M4.
+
+---
+
+# Piece 3 — the HTTP gate (§6, §7.2, §7.4a). PASSED, 2026-07-16.
+
+The "adopt without thinking" layer. Pieces 1 and 2 are library primitives; piece 3 is the
+drop-in a site actually mounts — and it FLIPS the primitive's default: the bare `Verifier`
+is replay-open by default (it cannot invent a shared secret and store), but **`startGate()`
+is replay-safe by default**, because at the gate layer we can demand both and refuse to boot
+without them. Owner directive (M4 piece 3): the lazy path must be the safe path.
+
+## The riskiest assumption, POC'd first (never shipped)
+
+The load-bearing question was not the crypto (pieces 1–2 proved that) but whether the
+two-round-trip nonce flow threads cleanly across an HTTP boundary at zero deps, replay-safe by
+default, failing closed at boot. A throwaway `node:http` spike wired the REAL nonce machinery
+(`issueChallenge`/`applySingleUse`/`InMemoryNonceStore`) with only `classify` faked, and drove
+it over real HTTP: **11/11** — accept → `503 replay_detected` → fresh accept → `503
+session_unknown`, plus 413 on an oversized body and boot-throws with the secret/store missing.
+Graduated by rewrite into `src/gate.js`.
+
+## The design — a thin shell over the public surface
+
+`createGate({verifier})` is a pure `node:http` handler over `{issueChallenge, check}` — nothing
+more; it consumes only the verify module's public API (PRD §6, "probe-style"). `startGate(opts)`
+adds the safe-by-default boot: `requireSingleUse` defaults **true**, `store:'memory'` is a named
+dev shortcut, and the fail-closed check runs **before** the 44-73s circuit load (a config error
+costs a second, not a minute). The `Verifier` constructor's own fail-closed remains as
+belt-and-suspenders.
+
+- **Routes.** `GET {basePath}/challenge` → `{nonce, transcript, expiresAt}` (base64url);
+  `POST {basePath}/verify` → the `Verdict`. **§1 invariant on the wire:** `ok:true` → HTTP 200
+  (branch on `over_threshold` in the body); `ok:false` → HTTP 503 ("re-challenge"), never a
+  status that reads as "denied person".
+- **AGENT_RULES invariants:** bounded body (413 over `maxBodyBytes`, default 1 MB, refused
+  mid-stream not after buffering), per-IP rate limiter (default 60/min, `false` to disable),
+  loopback in every example, no leaked internals, never throws out of the handler.
+- **Zero runtime deps.** Vanilla `node:http`; the `express()` adapter is our code, no new dep.
+
+## Verified end to end
+
+- **Unit (`test/gate.test.js`, fake verifier + real HTTP), 8 tests:** the accept → replay →
+  fresh → unknown sequence; 405/404/400 handling; the 413 body bound; the 429 rate limit and
+  `rateLimit:false`; the `express()` `next()` fall-through; `startGate` fail-closed BEFORE the
+  circuit load. Non-vacuity: the replay test would go green only if the gate spent the nonce.
+- **Integration (`test/integration.test.js`, REAL longfellow over REAL HTTP):** a proof minted
+  bound to a gate-issued nonce is POSTed to `/8een/verify` → 200 `over_threshold:true`; the
+  byte-identical replay → 503 `replay_detected`, `over_threshold:null`; a fresh session → 200
+  again (so the refusal is the gate's memory, not a broken proof).
+- **README §7.2 (adoption).** The README's Express snippet was run against real Express 5.2.1:
+  `app.use(gate.express())` serves the two routes AND the site's own routes still work (clean
+  `next()` fall-through); replay refused. Copy-paste complete.
+- **`demo/` — the fully-real showcase.** `node demo/server.js` boots the real verifier trusting
+  a union of per-proof CAs (a caCerts bundle), pre-mints a small pool of real proofs (the wallet
+  stand-in — the phone is a documented dead end on this host), and serves a browser page:
+  **verify → ✅ accepted (nonce burned); replay same bytes → ⛔ 503 replay_detected; new session
+  → ✅ accepted.** Driven end-to-end (5/5 over HTTP) and confirmed in the browser.
+
+## Review — 8 defects found and fixed (a targeted pass, then a high-effort workflow pass)
+
+A first targeted review found 4 (slow-loris, the 413 delivered as an ECONNRESET, an unbounded
+rate-limit map, a prologue throw that could hang). A second high-effort multi-agent review found
+8 more, all CONFIRMED, every one the project's signature shape — a bound or a default that
+*half-works and fails open* — and all fixed with tests:
+
+- **`createGate` re-opened the footgun.** It wrapped a replay-open `Verifier` with no check, so
+  the "manage the Verifier yourself" path silently lost the piece-3 guarantee. Fixed: a
+  `Verifier.requiresSingleUse` getter, and `createGate` now throws unless it reads `true` or the
+  caller passes `allowReplay: true` (replay-safe by default at *both* constructors).
+- **Fail-open config knobs.** A `NaN` `maxBodyBytes` (`Number(undefined)`) made `len > max`
+  always false and un-capped the body; a malformed `rateLimit` NaN'd the window and un-limited
+  the route. Both now validate at construction and throw — a bound that half-works is worse
+  than a loud error.
+- **`/challenge` 500'd in the documented replay-open mode** (a swallowed `issueChallenge` throw);
+  now a clean `404 challenge_disabled`.
+- **Early 429/405 on an in-flight POST** could deliver an ECONNRESET; now `connection: close`,
+  matching the 413/408 paths.
+- **A too-short `challengeSecret`** was caught only by the Verifier constructor *after* the
+  minute-long circuit load; `startGate` now checks the length up front (the "fails in a second"
+  contract it promised).
+- **Slow-drip vs. the idle timer.** A byte just under the idle window, forever, evaded the 408;
+  the body timeout is now a TOTAL deadline, and the test drives the stall.
+- **The demo colored "cannot verify" the same red as a real "no".** The one distinction this
+  project exists for — now three states, three colors (amber for `ok:false`).
+
+## Scope — what piece 3 does NOT do
+
+- **It is not the wallet, and the demo does not drive a real phone.** The demo's "wallet" is a
+  pre-minted proof pool because the Android emulator is a documented dead end on this host; the
+  gate's own behaviour is the genuine article. Real on-phone `ZkSystemId` stays unpinned (M3).
+- **`store:'memory'` is single-process dev only.** Production wants a shared `nonceStore` and a
+  distributed rate limiter — the built-in limiter is per-process, like `InMemoryNonceStore`.
+- **The gate does not own sessions or cookies.** After `ok:true` the site sets its own session;
+  8een answers one bit and stores nothing (NO-GO #7).
