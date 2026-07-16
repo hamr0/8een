@@ -94,12 +94,17 @@ function createRateLimiter({ limit, windowMs }) {
     const e = hits.get(key);
     if (e === undefined || now >= e.resetAt) {
       if (hits.size >= RL_HARD_CAP) {
-        // Sweep expired first; if a burst of DISTINCT keys still pins us at the cap
-        // (nothing expired to drop), reset the whole window rather than grow unbounded.
-        // Degrades the limiter under a flood -- it never leaks memory. Acceptable: this
-        // is a per-process best-effort limiter (front a real one for multi-replica).
+        // Sweep expired first. If a burst of DISTINCT live keys still pins us at the cap,
+        // evict the OLDEST-INSERTED half rather than clear() everyone: a Map preserves
+        // insertion order, so this drops the least-recent keys (nearest to expiry anyway)
+        // and keeps recent, likely-active counters intact -- half the blast radius of a
+        // full reset. Never leaks memory. Still a per-process best-effort limiter; front a
+        // real one for multi-replica.
         for (const [k, v] of hits) if (now >= v.resetAt) hits.delete(k);
-        if (hits.size >= RL_HARD_CAP) hits.clear();
+        if (hits.size >= RL_HARD_CAP) {
+          let drop = Math.ceil(hits.size / 2);
+          for (const k of hits.keys()) { if (drop-- <= 0) break; hits.delete(k); }
+        }
       }
       hits.set(key, { count: 1, resetAt: now + windowMs });
       return true;
@@ -110,11 +115,19 @@ function createRateLimiter({ limit, windowMs }) {
   };
 }
 
-/** The client key for rate limiting: socket address, or the first XFF hop behind a proxy. */
+/** The client key for rate limiting: socket address, or the trusted-proxy XFF hop. */
 function clientKey(req, trustProxy) {
   if (trustProxy) {
     const xff = req.headers['x-forwarded-for'];
-    if (typeof xff === 'string' && xff.length > 0) return xff.split(',')[0].trim();
+    if (typeof xff === 'string' && xff.length > 0) {
+      // Take the RIGHTMOST hop, not the leftmost. A proxy APPENDS the address it observed,
+      // so the rightmost is what your trusted proxy actually saw (non-spoofable); the
+      // leftmost is client-supplied -- a client can inject a fake X-Forwarded-For that the
+      // proxy appends to, and keying on it would let an attacker rotate XFF to dodge the
+      // limiter entirely. Assumes ONE trusted proxy in front (the "vetted proxy" contract).
+      const hops = xff.split(',');
+      return hops[hops.length - 1].trim();
+    }
   }
   return req.socket?.remoteAddress || 'unknown';
 }

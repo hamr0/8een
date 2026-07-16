@@ -147,7 +147,7 @@ async function boot() {
 
   const shutdown = async () => {
     console.log('\n[demo] shutting down...');
-    server.close();
+    await new Promise((r) => server.close(r)); // let in-flight responses flush before we exit
     await gate.stop();
     process.exit(0);
   };

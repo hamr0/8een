@@ -112,7 +112,12 @@
       const r = await fetch('/demo/wallet', { method: 'POST' });
       if (r.status === 410) {
         const e = await r.json();
-        $('wallet-meta').textContent = e.error;
+        // Terminal state: the pre-minted pool is spent. Make it unambiguous -- show the
+        // notice and disable every action so no button looks clickable-but-dead.
+        $('wallet-meta').textContent = '⛔ ' + e.error;
+        $('btn-verify').disabled = true;
+        $('btn-replay').disabled = true;
+        $('btn-reset').disabled = true;
         return;
       }
       const data = await r.json();

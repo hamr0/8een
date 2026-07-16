@@ -217,6 +217,25 @@ test('gate: rate limit -- a single source flooding is bounded (429)', async (t) 
   assert.deepEqual(codes.slice(3), [429, 429], 'the rest are rate-limited');
 });
 
+test('gate: trustProxy keys the limiter on the RIGHTMOST XFF hop -- a spoofed leftmost cannot dodge it', async (t) => {
+  const { handler } = createGate({ verifier: fakeVerifier(), trustProxy: true, rateLimit: { limit: 2, windowMs: 60_000 } });
+  const { port, close } = await serve(handler);
+  t.after(close);
+
+  const hit = (xff) => new Promise((resolve, reject) => {
+    http.get({ host: '127.0.0.1', port, path: '/8een/challenge', headers: { 'x-forwarded-for': xff } },
+      (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); }).on('error', reject);
+  });
+  // One real client (rightmost 9.9.9.9, what a trusted proxy appended); the attacker rotates
+  // the spoofable LEFTMOST each request. Under the old leftmost-keying these were 3 distinct
+  // keys and all passed; keying on the rightmost, they are ONE key and the 3rd is limited.
+  const c1 = await hit('spoofed-1, 9.9.9.9');
+  const c2 = await hit('spoofed-2, 9.9.9.9');
+  const c3 = await hit('spoofed-3, 9.9.9.9');
+  assert.deepEqual([c1, c2], [200, 200], 'first two from the same real client pass');
+  assert.equal(c3, 429, 'rotating the spoofable leftmost hop must NOT mint a fresh rate-limit key');
+});
+
 test('gate: rateLimit:false disables the built-in limiter', async (t) => {
   const { handler } = createGate({ verifier: fakeVerifier(), rateLimit: false });
   const { port, close } = await serve(handler);
