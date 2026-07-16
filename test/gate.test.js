@@ -169,6 +169,43 @@ test('gate: slow-loris -- a body that stalls is refused with 408, not held open'
   assert.equal(got.body.reason, GATE_REASONS.REQUEST_TIMEOUT);
 });
 
+// The DISCRIMINATING case (review finding 7): a client that keeps dribbling bytes -- one
+// every 40ms, forever -- must still be cut off. This is what a re-arming IDLE timer would
+// MISS (every drip resets it, so it never fires); only the TOTAL deadline catches it. The
+// 2s test timeout is the trap: under the old idle design the request never ends and this
+// times out (fails); under the total deadline the 408 lands at ~120ms. So this test can
+// only pass because the fix is real -- it is the guard watched firing against its own case.
+test('gate: slow-DRIP -- a body dribbled under any idle window is still cut off (408)', async (t) => {
+  const { handler } = createGate({ verifier: fakeVerifier(), maxBodyReadMs: 120 });
+  const { port, close } = await serve(handler);
+  let drip;
+  let r;
+  // Destroy the client socket in cleanup so a still-dribbling connection can't block
+  // server.close() -- that is what turned the "old design" run into a hang instead of a
+  // clean fail. Kept OUT of the assertion path so cleanup never masks the result.
+  t.after(() => { clearInterval(drip); r?.destroy(); return close(); });
+
+  // Race the response against an explicit 1s wall clock -- NOT node:test's own timeout,
+  // whose buffered-until-file-end output hid the signal. Under the TOTAL deadline the 408
+  // lands at ~120ms and wins the race. Under a re-arming IDLE timer the drip resets it
+  // forever, no response ever comes, and the wall clock wins with NO_RESPONSE -> the
+  // assert below fails cleanly. So a green here can ONLY mean the total-deadline fix works.
+  const outcome = await new Promise((resolve) => {
+    r = http.request(
+      { host: '127.0.0.1', port, method: 'POST', path: '/8een/verify',
+        headers: { 'content-type': 'application/json', 'content-length': 10_000 } },
+      (res) => { const c = []; res.on('data', (d) => c.push(d)); res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(c).toString()) })); },
+    );
+    r.on('error', () => resolve({ status: 'ERR' }));
+    r.write('{');
+    drip = setInterval(() => { try { r.write(' '); } catch { /* socket closed */ } }, 40);
+    setTimeout(() => resolve({ status: 'NO_RESPONSE' }), 1000).unref?.();
+  });
+  clearInterval(drip);
+  assert.equal(outcome.status, 408, `a dribbling body must be cut off by the TOTAL deadline, got ${outcome.status}`);
+  assert.equal(outcome.body.reason, GATE_REASONS.REQUEST_TIMEOUT);
+});
+
 test('gate: rate limit -- a single source flooding is bounded (429)', async (t) => {
   const { handler } = createGate({ verifier: fakeVerifier(), rateLimit: { limit: 3, windowMs: 60_000 } });
   const { port, close } = await serve(handler);
