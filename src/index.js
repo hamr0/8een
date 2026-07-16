@@ -37,6 +37,10 @@ export {
   InMemoryNonceStore,
 };
 
+// The HTTP gate (M4 piece 3) is the "adopt without thinking" layer: replay-safe by
+// default. It lives in its own module because it imports `Verifier` from here.
+export { createGate, startGate, GATE_REASONS } from './gate.js';
+
 export class Verifier {
   /** @type {VerifierService} */
   #service;
@@ -169,6 +173,11 @@ export class Verifier {
 
   get circuitsLoaded() {
     return this.#service.circuitsLoaded;
+  }
+
+  /** Whether replay defence is on -- the gate reads this to stay replay-safe by default. */
+  get requiresSingleUse() {
+    return this.#requireSingleUse;
   }
 
   /** Exactly whom this verifier trusts, counted from the child's own log. */

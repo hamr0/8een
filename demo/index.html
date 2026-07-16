@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>8een — replay-defense demo</title>
+  <style>
+    :root {
+      --bg: #0e1116; --card: #171b22; --line: #2a313c; --ink: #e6edf3;
+      --muted: #9aa7b4; --ok: #3fb950; --no: #f85149; --warn: #d29922; --accent: #58a6ff;
+    }
+    @media (prefers-color-scheme: light) {
+      :root { --bg: #f6f8fa; --card: #fff; --line: #d0d7de; --ink: #1f2328;
+              --muted: #656d76; --ok: #1a7f37; --no: #cf222e; --warn: #9a6700; --accent: #0969da; }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font: 16px/1.55 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      padding: 24px 16px; display: flex; justify-content: center;
+    }
+    main { width: 100%; max-width: 640px; }
+    h1 { font-size: 1.5rem; margin: 0 0 4px; }
+    .sub { color: var(--muted); margin: 0 0 24px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+    .step { display: flex; gap: 12px; align-items: flex-start; }
+    .num { flex: 0 0 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff;
+           display: grid; place-items: center; font-weight: 700; font-size: .9rem; }
+    .step h2 { font-size: 1rem; margin: 2px 0 6px; }
+    .step p { margin: 0; color: var(--muted); font-size: .92rem; }
+    button {
+      appearance: none; border: 1px solid var(--line); background: var(--accent); color: #fff;
+      font-weight: 600; font-size: .95rem; padding: 10px 16px; border-radius: 8px; cursor: pointer;
+      margin-top: 12px; width: 100%;
+    }
+    button.ghost { background: transparent; color: var(--ink); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    .verdict { margin-top: 12px; padding: 12px 14px; border-radius: 8px; border: 1px solid var(--line);
+               font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; white-space: pre-wrap; word-break: break-word; }
+    .verdict.ok { border-color: var(--ok); }
+    .verdict.no { border-color: var(--no); }
+    .verdict.cant { border-color: var(--warn); }
+    .tag { font-weight: 700; }
+    .tag.ok { color: var(--ok); } .tag.no { color: var(--no); } .tag.cant { color: var(--warn); }
+    .meta { color: var(--muted); font-size: .8rem; margin-top: 8px; font-family: ui-monospace, monospace; }
+    .note { font-size: .82rem; color: var(--muted); border-left: 3px solid var(--line); padding-left: 12px; margin: 20px 0 0; }
+    code { background: rgba(127,127,127,.15); padding: 1px 5px; border-radius: 4px; font-size: .85em; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>8een — replay defense, live</h1>
+    <p class="sub">The same proof is accepted once, then refused on replay. That refusal is the single-use nonce firing — real longfellow verification underneath.</p>
+
+    <div class="card">
+      <div class="step">
+        <div class="num">1</div>
+        <div>
+          <h2>Get a proof from the wallet</h2>
+          <p>The site asks 8een for a one-time <b>nonce</b>; the wallet builds a proof stamped with it. (Here the “wallet” is a pre-minted pool — the real one is a phone.)</p>
+        </div>
+      </div>
+      <button id="btn-wallet">Get a fresh proof</button>
+      <div id="wallet-meta" class="meta"></div>
+    </div>
+
+    <div class="card">
+      <div class="step">
+        <div class="num">2</div>
+        <div>
+          <h2>Verify it</h2>
+          <p>POST the proof to the real gate at <code>/8een/verify</code>. First use of the nonce → accepted, nonce burned.</p>
+        </div>
+      </div>
+      <button id="btn-verify" disabled>Verify age</button>
+      <div id="verify-out"></div>
+    </div>
+
+    <div class="card">
+      <div class="step">
+        <div class="num">3</div>
+        <div>
+          <h2>Replay the exact same bytes</h2>
+          <p>Re-POST the identical proof — what an attacker who recorded it would do. The nonce is already spent → refused.</p>
+        </div>
+      </div>
+      <button id="btn-replay" disabled>Replay it</button>
+      <div id="replay-out"></div>
+      <button id="btn-reset" class="ghost" disabled>↻ New session (fresh nonce)</button>
+    </div>
+
+    <p class="note"><b>ok:false is never “underage.”</b> A replay comes back <code>ok:false, over_threshold:null, reason:replay_detected</code> — “I can’t confirm this is fresh, ask again,” not a verdict about the person. Deny entry, but never tell them they failed the age check.</p>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let currentProof = null;
+
+    function render(el, verdict, httpStatus) {
+      // Three states, three colors — never conflate "cannot verify" with "not over 18".
+      let cls, tag;
+      if (verdict.ok === false) { cls = 'cant'; tag = '⛔ cannot verify'; }   // amber: broken/stale, NOT a person
+      else if (verdict.over_threshold === true) { cls = 'ok'; tag = '✅ over 18'; }
+      else { cls = 'no'; tag = '❌ not over 18'; }
+      el.innerHTML =
+        '<div class="verdict ' + cls + '"><span class="tag ' + cls + '">' + tag + '</span>  (HTTP ' + httpStatus + ')\n' +
+        JSON.stringify(verdict, null, 2) + '</div>';
+    }
+
+    async function getWallet() {
+      $('btn-wallet').disabled = true;
+      const r = await fetch('/demo/wallet', { method: 'POST' });
+      if (r.status === 410) {
+        const e = await r.json();
+        $('wallet-meta').textContent = e.error;
+        return;
+      }
+      const data = await r.json();
+      currentProof = data.proof;
+      $('wallet-meta').textContent =
+        'session ' + data.session + ' · proof stamped with nonce ' + data.nonceFingerprint + '… · ' + data.poolRemaining + ' left in pool';
+      $('btn-verify').disabled = false;
+      $('btn-replay').disabled = true;
+      $('verify-out').innerHTML = '';
+      $('replay-out').innerHTML = '';
+    }
+
+    async function post(proof) {
+      const r = await fetch('/8een/verify', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(proof),
+      });
+      return { verdict: await r.json(), status: r.status };
+    }
+
+    $('btn-wallet').onclick = getWallet;
+
+    $('btn-verify').onclick = async () => {
+      $('btn-verify').disabled = true;
+      const { verdict, status } = await post(currentProof);
+      render($('verify-out'), verdict, status);
+      $('btn-replay').disabled = false;
+    };
+
+    $('btn-replay').onclick = async () => {
+      $('btn-replay').disabled = true;
+      const { verdict, status } = await post(currentProof);
+      render($('replay-out'), verdict, status);
+      $('btn-reset').disabled = false;
+    };
+
+    $('btn-reset').onclick = () => {
+      $('btn-reset').disabled = true;
+      $('btn-wallet').disabled = false;
+      getWallet();
+    };
+  </script>
+</body>
+</html>

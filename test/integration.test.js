@@ -44,8 +44,9 @@ import { readFileSync, existsSync, mkdtempSync, writeFileSync, readdirSync } fro
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Verifier, VerifierService, REASONS, issueChallenge, InMemoryNonceStore } from '../src/index.js';
+import { Verifier, VerifierService, REASONS, issueChallenge, InMemoryNonceStore, createGate } from '../src/index.js';
 import { randomBytes } from 'node:crypto';
+import http from 'node:http';
 
 const POC = new URL('../poc/longfellow-zk/', import.meta.url).pathname;
 const SERVER_DIR = join(POC, 'reference/verifier-service/server');
@@ -660,6 +661,133 @@ test('M4 piece 2: a replayed proof is refused when single-use is required, accep
     const second = await lax.check(singleUse());
     assert.equal(first.over_threshold, true);
     assert.equal(second.over_threshold, true, 'stateless verifier has no memory when the gate is off');
+  });
+});
+
+/**
+ * M4 piece 3 — the same replay defence, but reached over REAL HTTP through the gate.
+ *
+ * The nonce test above proves `Verifier.check()` refuses a replay. This proves the
+ * HTTP gate (`createGate`) threads that exact behaviour end to end: a real proof is
+ * POSTed to /8een/verify and accepted (HTTP 200, over_threshold:true), the
+ * byte-identical replay is refused (HTTP 503, replay_detected, over_threshold:null),
+ * and a proof from a fresh session is accepted again -- so the refusal is the gate's
+ * spent-nonce memory, not a broken proof. The §1 invariant is checked on the wire:
+ * ok:false NEVER carries over_threshold:false, and NEVER an HTTP status that reads as
+ * "denied person". This is the piece-3 counterpart to the check()-level nonce test.
+ */
+test('M4 piece 3: the HTTP gate accepts a proof once and refuses its replay over real HTTP', proofSuite, async (t) => {
+  const secret = randomBytes(32);
+  const challenge = issueChallenge({ secret, ttlMs: FRESHNESS_TOLERANCE_MS });
+  const dir = mintFixtures(['-session-nonce', Buffer.from(challenge.nonce).toString('hex')]);
+
+  const service = new VerifierService({
+    binary: join(SERVER_DIR, 'server'),
+    circuitDir: CIRCUIT_SOURCE,
+    caCerts: join(dir, 'caCerts.pem'),
+    port: 8923,
+  });
+  await service.start();
+  t.after(() => service.stop());
+
+  const verifier = new Verifier(service, 'age_over_18', {
+    requireCurrentValidity: false, // this test is about the nonce, not the credential clock
+    requireSingleUse: true,
+    challengeSecret: secret,
+    nonceStore: new InMemoryNonceStore({ quiet: true }),
+    challengeTtlMs: FRESHNESS_TOLERANCE_MS,
+  });
+
+  const { handler } = createGate({ verifier });
+  const server = http.createServer(handler);
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  t.after(() => new Promise((r) => server.close(r)));
+
+  // The wallet's proof, as JSON the gate expects (base64url of the same bytes).
+  const j = JSON.parse(readFileSync(join(dir, 'single-use.json'), 'utf8'));
+  const proofBody = JSON.stringify({
+    transcript: Buffer.from(j.Transcript, 'base64').toString('base64url'),
+    deviceResponse: Buffer.from(j.ZKDeviceResponseCBOR, 'base64').toString('base64url'),
+  });
+
+  const postVerify = () => new Promise((resolve, reject) => {
+    const req = http.request(
+      { host: '127.0.0.1', port, method: 'POST', path: '/8een/verify',
+        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(proofBody) } },
+      (res) => {
+        const c = [];
+        res.on('data', (d) => c.push(d));
+        res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(c).toString()) }));
+      },
+    );
+    req.on('error', reject);
+    req.end(proofBody);
+  });
+
+  await t.test('GET /8een/challenge returns a nonce over HTTP', async () => {
+    const r = await new Promise((resolve, reject) => {
+      http.get({ host: '127.0.0.1', port, path: '/8een/challenge' }, (res) => {
+        const c = [];
+        res.on('data', (d) => c.push(d));
+        res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(c).toString()) }));
+      }).on('error', reject);
+    });
+    assert.equal(r.status, 200);
+    assert.equal(typeof r.body.nonce, 'string');
+    assert.equal(typeof r.body.transcript, 'string');
+  });
+
+  await t.test('first POST /8een/verify is accepted (200, over_threshold:true)', async () => {
+    const r = await postVerify();
+    assert.equal(r.status, 200);
+    assert.equal(r.body.ok, true);
+    assert.equal(r.body.over_threshold, true);
+    assert.equal(r.body.reason, REASONS.VERIFIED);
+  });
+
+  await t.test('the byte-identical replay is refused (503, replay_detected, over_threshold:null)', async () => {
+    const r = await postVerify();
+    assert.equal(r.status, 503, 'a stale/broken verdict is 503, NEVER a "denied person" status');
+    assert.equal(r.body.ok, false);
+    assert.equal(r.body.over_threshold, null, 'a replay is never a verdict about a person');
+    assert.equal(r.body.reason, REASONS.REPLAY_DETECTED);
+  });
+
+  await t.test('a fresh session is accepted again -- the gate refused the replay, not a broken proof', async () => {
+    const fresh = issueChallenge({ secret, ttlMs: FRESHNESS_TOLERANCE_MS });
+    const dir2 = mintFixtures(['-session-nonce', Buffer.from(fresh.nonce).toString('hex')]);
+    // A second CA: start a second verifier trusting it, wrapped in its own gate.
+    const svc2 = new VerifierService({
+      binary: join(SERVER_DIR, 'server'), circuitDir: CIRCUIT_SOURCE,
+      caCerts: join(dir2, 'caCerts.pem'), port: 8924,
+    });
+    await svc2.start();
+    t.after(() => svc2.stop());
+    const v2 = new Verifier(svc2, 'age_over_18', {
+      requireCurrentValidity: false, requireSingleUse: true, challengeSecret: secret,
+      nonceStore: new InMemoryNonceStore({ quiet: true }), challengeTtlMs: FRESHNESS_TOLERANCE_MS,
+    });
+    const { handler: h2 } = createGate({ verifier: v2 });
+    const s2 = http.createServer(h2);
+    await new Promise((r) => s2.listen(0, '127.0.0.1', r));
+    t.after(() => new Promise((r) => s2.close(r)));
+    const j2 = JSON.parse(readFileSync(join(dir2, 'single-use.json'), 'utf8'));
+    const body2 = JSON.stringify({
+      transcript: Buffer.from(j2.Transcript, 'base64').toString('base64url'),
+      deviceResponse: Buffer.from(j2.ZKDeviceResponseCBOR, 'base64').toString('base64url'),
+    });
+    const r = await new Promise((resolve, reject) => {
+      const req = http.request(
+        { host: '127.0.0.1', port: s2.address().port, method: 'POST', path: '/8een/verify',
+          headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body2) } },
+        (res) => { const c = []; res.on('data', (d) => c.push(d)); res.on('end', () => resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(c).toString()) })); },
+      );
+      req.on('error', reject);
+      req.end(body2);
+    });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.over_threshold, true);
   });
 });
 
