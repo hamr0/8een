@@ -24,6 +24,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"time"
 )
 
 // ---- byte/CBOR helpers (all hand-encoded for exact layout control) ----
@@ -154,6 +155,57 @@ const (
 	nowStr = "2026-07-13T00:00:00Z"
 )
 
+// credClock is the credential's OWN clock: the MSO validity window (validFrom /
+// validUntil) and the matching `now` that the prover, the verifier and the wire
+// Timestamp all share. Each field is a 20-char tdate.
+//
+// It is deliberately distinct from the x509 certWindow (fixture.go): the chain
+// clock is real wall time, this one is the clock the ZK circuit checks the
+// credential against. Until M4 this was a single frozen constant, so the circuit's
+// validFrom <= now <= validUntil check was never exercised against real time and an
+// expired credential verified (PRD §7.1a). The M4 freshness gate (src/verdict.js)
+// bounds this `now` against the real clock, which is only testable once fixtures
+// can carry a REAL-time now (fresh) and a PAST one (expired) — hence this type.
+//
+// frozenClock keeps the historical constants for the deterministic layout tests
+// (layout_test.go) and the Mint()/mintWith() path they drive; GenFixtures mints
+// under realTimeClock()/expiredClock() instead.
+type credClock struct{ validFrom, validUntil, now string }
+
+var frozenClock = credClock{validFrom: validFrom, validUntil: validUntil, now: nowStr}
+
+// tdate20 formats t as a 20-char tdate ("2006-01-02T15:04:05Z"). The zone is
+// appended as a literal Z rather than via a layout token, so the width is exactly
+// 20 whatever the offset — validateRequestIso rejects anything else.
+func tdate20(t time.Time) string {
+	return t.UTC().Format("2006-01-02T15:04:05") + "Z"
+}
+
+// realTimeClock is the fresh default for minted fixtures: now is the real wall
+// clock, the window straddles it by a year each way. A credential minted under it
+// is genuinely valid right now, so it passes the M4 freshness gate — and would stop
+// passing if the gate were ever broken to trust the wire timestamp again.
+func realTimeClock() credClock {
+	now := time.Now()
+	return credClock{
+		validFrom:  tdate20(now.AddDate(-1, 0, 0)),
+		validUntil: tdate20(now.AddDate(1, 0, 0)),
+		now:        tdate20(now),
+	}
+}
+
+// expiredClock mints a credential whose window closed in the past, with a `now`
+// INSIDE that past window so the circuit's own validFrom <= now <= validUntil check
+// still passes (the raw prover/verifier accept it — that is the whole point). Only
+// the real-clock gate outside the circuit can catch it: its `now` is years stale.
+func expiredClock() credClock {
+	return credClock{
+		validFrom:  "2020-01-01T00:00:00Z",
+		validUntil: "2021-01-01T00:00:00Z",
+		now:        "2020-06-01T00:00:00Z",
+	}
+}
+
 // MintResult carries everything the prover/verifier and the service wrapper need.
 // It describes ONE PRESENTATION: a credential shown against one session
 // transcript. Two presentations of the same Credential differ only in Transcript
@@ -169,6 +221,10 @@ type MintResult struct {
 	// this exact public key, so the key validateIssuerKey extracts from the cert
 	// equals the key the proof was generated under. This is the whole trust seam.
 	IssuerKey *ecdsa.PrivateKey
+	// clock is the credential's own validity clock (see credClock). The prover and
+	// verifier take `now` from here, and packageFixture writes it as the wire
+	// Timestamp, so all three agree with the MSO window baked in at mint time.
+	clock credClock
 }
 
 // Credential is the ISSUED artifact, independent of any session: the issuer key,
@@ -193,6 +249,7 @@ type Credential struct {
 
 	device       *ecdsa.PrivateKey
 	issuerSigned []byte
+	clock        credClock
 }
 
 // defaultTranscript is the 4-byte SessionTranscript stand-in ([null, null, null]).
@@ -277,11 +334,11 @@ func wrapTag24(b []byte) []byte {
 
 // buildValidityInfo returns A2{ validFrom: tdate, validUntil: tdate }
 // (MINT-SPEC.md:50-52). Enforced validFrom <= now <= validUntil, lexicographic.
-func buildValidityInfo() []byte {
+func buildValidityInfo(ck credClock) []byte {
 	return cat(
 		[]byte{0xA2},
-		tstr("validFrom"), buildTDate(validFrom),
-		tstr("validUntil"), buildTDate(validUntil),
+		tstr("validFrom"), buildTDate(ck.validFrom),
+		tstr("validUntil"), buildTDate(ck.validUntil),
 	)
 }
 
@@ -307,7 +364,7 @@ func buildValueDigests(digestID int, itemDigest []byte) []byte {
 // inner tag24 wrapper uses the 0x59 two-byte length form (see wrapTag24 / mintWith).
 // Field internals are rigid; overall map order is not (parser looks up by name,
 // circuit reads at parser-reported offsets).
-func buildMSO(itemDigest, coseKey []byte) []byte {
+func buildMSO(itemDigest, coseKey []byte, ck credClock) []byte {
 	return cat(
 		[]byte{0xA6},
 		tstr("version"), tstr("1.0"),
@@ -315,7 +372,7 @@ func buildMSO(itemDigest, coseKey []byte) []byte {
 		tstr("docType"), tstr(docType),
 		tstr("valueDigests"), buildValueDigests(0, itemDigest),
 		tstr("deviceKeyInfo"), buildDeviceKeyInfo(coseKey),
-		tstr("validityInfo"), buildValidityInfo(),
+		tstr("validityInfo"), buildValidityInfo(ck),
 	)
 }
 
@@ -343,22 +400,35 @@ func Mint(elemValue []byte) (*MintResult, error) {
 	return c.Present(defaultTranscript)
 }
 
-// MintCredential issues one credential under a fresh issuer.
+// MintCredential issues one credential under a fresh issuer, on the frozen clock.
+// GenFixtures uses MintCredentialClock to mint under a real-time or expired clock.
 func MintCredential(elemValue []byte) (*Credential, error) {
+	return MintCredentialClock(elemValue, frozenClock)
+}
+
+// MintCredentialClock issues one credential under a fresh issuer and the given clock.
+func MintCredentialClock(elemValue []byte, ck credClock) (*Credential, error) {
 	// Fresh P-256 issuer (CA/MSO-signing) key, generated at runtime. No keys are
 	// ever written to the tree (PRD §10).
 	issuer, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
 	}
-	return MintCredentialUnder(issuer, elemValue)
+	return MintCredentialUnderClock(issuer, elemValue, ck)
 }
 
-// MintCredentialUnder issues a credential under an EXISTING issuer key, with a
-// fresh device key and salt — i.e. a different credential from the same issuer.
-// The unlinkability check (PRD §7.3) needs this as its control: it is what proves
+// MintCredentialUnder issues a credential under an EXISTING issuer key on the frozen
+// clock; MintCredentialUnderClock is the same with the clock supplied.
+//
+// The unlinkability check (PRD §7.3) needs the shared-issuer form: it is what proves
 // that the identifiers the verifier can see are the issuer's, not the holder's.
 func MintCredentialUnder(issuer *ecdsa.PrivateKey, elemValue []byte) (*Credential, error) {
+	return MintCredentialUnderClock(issuer, elemValue, frozenClock)
+}
+
+// MintCredentialUnderClock issues a credential under an EXISTING issuer key, with a
+// fresh device key and salt, on the given clock.
+func MintCredentialUnderClock(issuer *ecdsa.PrivateKey, elemValue []byte, ck credClock) (*Credential, error) {
 	device, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, err
@@ -367,14 +437,14 @@ func MintCredentialUnder(issuer *ecdsa.PrivateKey, elemValue []byte) (*Credentia
 	if _, err := rand.Read(salt); err != nil {
 		return nil, err
 	}
-	return credentialWith(issuer, device, salt, elemValue)
+	return credentialWith(issuer, device, salt, elemValue, ck)
 }
 
 // mintWith is the deterministic core of Mint: given fixed keys, salt and value it
-// assembles a byte-identical DeviceResponse. Split out so layout_test.go can
-// assert exact bytes without relying on runtime randomness.
+// assembles a byte-identical DeviceResponse on the frozen clock. Split out so
+// layout_test.go can assert exact bytes without relying on runtime randomness.
 func mintWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*MintResult, error) {
-	c, err := credentialWith(issuer, device, salt, elemValue)
+	c, err := credentialWith(issuer, device, salt, elemValue, frozenClock)
 	if err != nil {
 		return nil, err
 	}
@@ -383,8 +453,9 @@ func mintWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*MintRe
 
 // credentialWith builds the ISSUED half — everything signed by the issuer and
 // therefore fixed for the life of the credential. Nothing here depends on a
-// session; the transcript enters only in Present.
-func credentialWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*Credential, error) {
+// session; the transcript enters only in Present. The clock's validity window is
+// baked into the signed MSO here, so it must match the `now` used at prove time.
+func credentialWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte, ck credClock) (*Credential, error) {
 	const digestID = 0
 
 	// ---- IssuerSignedItem (tag24-wrapped A4 map, exactly 4 keys) ----
@@ -397,7 +468,7 @@ func credentialWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*
 	coseKey := buildCOSEKey(coord32(device.PublicKey.X), coord32(device.PublicKey.Y))
 
 	// ---- MSO map (>= 256 bytes so inner tag24 uses the 0x59 2-byte form) ----
-	mso := buildMSO(itemDigest[:], coseKey)
+	mso := buildMSO(itemDigest[:], coseKey, ck)
 	if len(mso) < 256 {
 		return nil, fmt.Errorf("MSO only %d bytes, need >= 256 (would break the 0x59 invariant)", len(mso))
 	}
@@ -456,6 +527,7 @@ func credentialWith(issuer, device *ecdsa.PrivateKey, salt, elemValue []byte) (*
 		IssuerPkY:    pkString(issuer.PublicKey.Y),
 		device:       device,
 		issuerSigned: issuerSigned,
+		clock:        ck,
 	}, nil
 }
 
@@ -507,6 +579,7 @@ func (c *Credential) Present(transcript []byte) (*MintResult, error) {
 		IssuerPkY:      c.IssuerPkY,
 		DocType:        c.DocType,
 		IssuerKey:      c.IssuerKey,
+		clock:          c.clock,
 	}, nil
 }
 

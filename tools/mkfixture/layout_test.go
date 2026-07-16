@@ -134,7 +134,7 @@ func TestTDateFraming(t *testing.T) {
 		t.Fatalf("tdate body = %q, want %q", td[2:], validFrom)
 	}
 
-	vi := buildValidityInfo()
+	vi := buildValidityInfo(frozenClock)
 	if vi[0] != 0xA2 {
 		t.Fatalf("validityInfo header = %#x, want A2 (2-entry map)", vi[0])
 	}
@@ -181,7 +181,7 @@ func TestMSOAtLeast256AndTag24TwoByte(t *testing.T) {
 	dev := p256(t)
 	coseKey := buildCOSEKey(coord32(dev.PublicKey.X), coord32(dev.PublicKey.Y))
 	digest := sha256.Sum256([]byte("any 32-byte digest stand-in for layout"))
-	mso := buildMSO(digest[:], coseKey)
+	mso := buildMSO(digest[:], coseKey, frozenClock)
 
 	if len(mso) < 256 {
 		t.Fatalf("MSO is %d bytes, must be >= 256 (0x59 invariant)", len(mso))

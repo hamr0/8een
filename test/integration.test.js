@@ -207,6 +207,9 @@ const RIG = () => ({
   binary: join(SERVER_DIR, 'server'),
   circuitDir: CIRCUIT_SOURCE,
   caCerts: join(fixtures(), 'caCerts.pem'),
+  // These rigs drive the non-freshness tests, which opt OUT of the currency gate (see
+  // NO_FRESHNESS). VerifierService ignores this key; Verifier.start honours it.
+  ...NO_FRESHNESS,
 });
 
 /**
@@ -248,6 +251,24 @@ const TAMPERED = () => proof('tampered');
 const STALE_NONCE = () => proof('stale-nonce');
 const MANGLED_CERT = () => proof('mangled-cert');
 const SUBSTITUTED_CLAIM = () => proof('substituted-claim');
+const EXPIRED = () => proof('expired-credential');
+
+// The M4 credential-currency gate (requireCurrentValidity, ON by default) bounds the
+// presentation timestamp against the real clock, default tolerance 5 min. That default
+// is unit-tested at the exact boundary in verdict.test.js.
+//
+// The tests below that are NOT about freshness -- trust discrimination, the §7.1 matrix,
+// the EU matrix, unlinkability -- deliberately turn the gate OFF (see NO_FRESHNESS).
+// They predate it and test orthogonal concerns (the trust boundary, the ZK layer, the
+// claim), and coupling them to the wall clock would make them flake as fixtures age past
+// tolerance across the slow suite, and would need patch 0003 (the Now-echo) they have no
+// reason to. Freshness is exercised only by the dedicated M4 test, which sets a generous
+// tolerance: the suite mints fixtures ONCE and verifies them across minutes of per-server
+// circuit loads, so a genuinely fresh credential can be several minutes old by the time
+// that test checks it. 24 h covers any realistic suite runtime while still failing the
+// expired-credential fixture, whose timestamp is YEARS stale -- discrimination stays real.
+const NO_FRESHNESS = { requireCurrentValidity: false };
+const FRESHNESS_TOLERANCE_MS = 24 * 60 * 60_000;
 
 // The zero-circuit trap. A server pointed at an empty directory reports
 // /healthz "ok", advertises 12 specs it does not have, and rejects every valid
@@ -377,8 +398,8 @@ test('the negative matrix (PRD §7.1)', proofSuite, async (t) => {
   await service.start();
   t.after(() => service.stop());
 
-  const v = new Verifier(service, 'age_over_18');
-  const strict = new Verifier(service, 'age_over_21');
+  const v = new Verifier(service, 'age_over_18', NO_FRESHNESS);
+  const strict = new Verifier(service, 'age_over_21', NO_FRESHNESS);
 
   assert.equal(service.circuitsLoaded, 17, 'circuits actually on disk, counted from the child log');
 
@@ -506,6 +527,55 @@ test('the negative matrix (PRD §7.1)', proofSuite, async (t) => {
 });
 
 /**
+ * M4 piece 1 — the credential-currency gate, end to end on the REAL clock.
+ *
+ * Fail-first, recorded 2026-07-15 (docs/02-evidence/M4-EVIDENCE.md): before this gate
+ * the expired-credential fixture — a valid over-18 proof whose validity window closed
+ * in 2021 — verified as {ok:true, over_threshold:true}, byte-indistinguishable from a
+ * live credential, because the ZK layer checks the window against a `now` the PROVER
+ * supplies and never against real time (PRD §7.1a). This is that hole, now closed.
+ *
+ * Non-vacuity is built in three ways: the SAME service ACCEPTS a fresh credential and
+ * REFUSES the expired one (so a pass cannot come from a gate that rejects everything);
+ * and with the gate OFF the expired credential verifies AGAIN (so the gate is provably
+ * what refuses it, and an expired ID still proves adulthood — the knob's premise).
+ *
+ * The refusal is the §1 invariant, not a collapse of it: an expired presentation is a
+ * real verdict {ok:true, over_threshold:false, credential_expired} — "we checked, this
+ * is not currently valid" — never {ok:false} and never "you are underage".
+ */
+test('M4: an expired credential is refused when currency is required, accepted when it is not', proofSuite, async (t) => {
+  const service = new VerifierService({ ...RIG(), port: 8921 });
+  await service.start();
+  t.after(() => service.stop());
+
+  // Default: requireCurrentValidity ON (the secure default). Off: age only.
+  const strict = new Verifier(service, 'age_over_18', { toleranceMs: FRESHNESS_TOLERANCE_MS });
+  const lax = new Verifier(service, 'age_over_18', { requireCurrentValidity: false });
+
+  await t.test('non-vacuity: a fresh credential still verifies through the gate', async () => {
+    const r = await strict.check(VALID());
+    assert.equal(r.ok, true);
+    assert.equal(r.over_threshold, true);
+    assert.equal(r.reason, REASONS.VERIFIED);
+  });
+
+  await t.test('the expired credential is a real no (over_threshold:false), not a breakage', async () => {
+    const r = await strict.check(EXPIRED());
+    assert.equal(r.ok, true, 'we DID get an answer -- the proof and the chain both verified');
+    assert.equal(r.over_threshold, false);
+    assert.equal(r.reason, REASONS.CREDENTIAL_EXPIRED, 'refused for staleness -- distinct from a bad proof or a false claim');
+  });
+
+  await t.test('with currency NOT required, the SAME expired credential verifies -- the age fact stands', async () => {
+    const r = await lax.check(EXPIRED());
+    assert.equal(r.ok, true);
+    assert.equal(r.over_threshold, true, 'an expired ID still proves the holder is an adult');
+    assert.equal(r.reason, REASONS.VERIFIED);
+  });
+});
+
+/**
  * M3 rung 1 — EU interop, the local half. Does 8een read a credential minted under
  * the EU AV docType/namespace (eu.europa.ec.av.1) exactly as it reads an ISO mDL one?
  *
@@ -535,7 +605,7 @@ test('M3 rung 1: the §7.1 matrix under the EU AV docType (eu.europa.ec.av.1)', 
   await service.start();
   t.after(() => service.stop());
 
-  const v = new Verifier(service, 'age_over_18');
+  const v = new Verifier(service, 'age_over_18', NO_FRESHNESS);
   assert.equal(service.circuitsLoaded, 17, 'circuits loaded, counted from the child log');
 
   await t.test('a valid EU-docType proof is accepted', async () => {
@@ -612,7 +682,7 @@ test('unlinkability: two presentations of one credential are indistinguishable (
   await service.start();
   t.after(() => service.stop());
 
-  const v = new Verifier(service, 'age_over_18');
+  const v = new Verifier(service, 'age_over_18', NO_FRESHNESS);
 
   const a1 = await v.check(proof('unlinkable-a1'));
   const a2 = await v.check(proof('unlinkable-a2'));

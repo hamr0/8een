@@ -176,7 +176,7 @@ bit; the API physically cannot return an age.
 | **M1 — verify module** | The pure verdict module + core wrapper, behavior-level tests incl. all §7 negatives. | "The binary's output can be classified into a trustworthy one-bit verdict." |
 | **M2 — full local loop** | Test-CA + prover CLI; end-to-end offline: mint → prove → verify. Unlinkability transcript check (§7.3). | "We can generate spec-conformant credentials/proofs ourselves." |
 | **M3 — EU interop** | Verify a proof produced by the EU AV app (Android, driven via baremobile/emulator). **Revised by the EU-stack audit (2026-07-14):** any flavor will do — ZK is carried in all of them — but the proof **must be captured over the browser DC API or proximity, never OpenID4VP**, which cannot emit one (`EU-STACK-AUDIT.md` §2). Differential-test the same proofs against `av-dc-api-backend` (vendored Multipaz, deployed and live) as an independent oracle. | "The EU app's proofs are format-compatible with upstream longfellow." **Fallback if brittle:** differential test vs. `av-dc-api-backend` and/or longfellow's reference prover; real-app interop documented as pending in the dossier. |
-| **M4 — the gate** | Endpoint + middleware + demo site. All AGENT_RULES invariants apply (rate-limiting, unhappy paths, no `0.0.0.0`). Probe-style check: middleware consumes only the verify module's public surface. **Owns "is this presentation still good *right now*"** — both halves: (a) per-session nonce, single-use; (b) **credential validity window — an expired credential must not verify** (see §7.4). | "A mid-size site can adopt this without thinking." |
+| **M4 — the gate** | Endpoint + middleware + demo site. All AGENT_RULES invariants apply (rate-limiting, unhappy paths, no `0.0.0.0`). Probe-style check: middleware consumes only the verify module's public surface. **Owns "is this presentation still good *right now*"** — both halves: (a) per-session nonce, single-use; (b) **credential validity window — an expired credential must not verify** (see §7.4). **Progress:** piece 1 — (b) credential currency — **DONE 2026-07-15** (`requireCurrentValidity`, §7.1a/§7.4b, `docs/02-evidence/M4-EVIDENCE.md`). Remaining: (a) the nonce, and the endpoint/middleware/demo. | "A mid-size site can adopt this without thinking." |
 | **M5 — dossier** | The refutation page with the live demo embedded. | "The argument survives being written down with citations." |
 
 POC graduates by **rewriting, never shipping** (AGENT_RULES).
@@ -200,14 +200,22 @@ A developer integrates the gate into an existing vanilla-Node/Express site in
 **under 30 minutes using only the README**. Timed with a real run before M4
 closes, not asserted.
 
-### 7.1a Not covered by the M2 matrix: credential expiry (owned by M4, §7.4)
-The §7.1 rows above are all executable and passing as of M2 — **except that none of
-them exercises an expired credential.** M2 made the *x509 chain* clock real; the
-*credential's own* clock is still a frozen constant (`nowStr` in `tools/mkfixture`),
-and the MSO `validFrom`/`validUntil` window is a lexical compare against it. So an
-expired credential is currently refused by nothing we test. Stated here rather than
-left in a comment, because it is a real gap in an age check and the kind of thing
-that quietly never gets done. It is scheduled: **§7.4, M4.**
+### 7.1a Credential expiry — CLOSED by M4 piece 1 (2026-07-15)
+The §7.1 rows were all executable and passing as of M2 **except that none exercised an
+expired credential.** M2 made the *x509 chain* clock real; the *credential's own* clock
+was a frozen constant, and — more sharply, found when this was built — the verifier took
+that clock from a `Now` the **prover** supplies inside the proof (`poc/…/zk/cbor.go:191`
+→ `proofs.go:177`) and never bounded it against real time, so an expired credential
+**verified** (measured fail-first: `ok:true, over_threshold:true`, indistinguishable from
+a live one — `docs/02-evidence/M4-EVIDENCE.md`).
+
+**Now closed.** M4 piece 1 makes the verifier echo the timestamp it used and bounds it
+against the real clock in `src/verdict.js`. An expired presentation is a real verdict
+(`ok:true, over_threshold:false`, `credential_expired`); an unreadable date is `ok:false`
+(`freshness_unknown`), never a "no". Gated by `requireCurrentValidity` (§7.4b, §9 D7),
+covered by unit + integration tests, including the fail-first hole as a regression guard.
+The credential's clock *inside* the circuit remains frozen and untouched — we bound its
+input from outside, we do not change its maths.
 
 ### 7.1b Known limitation: `mkfixture` docType/namespace are process-global (test-isolation)
 Surfaced by the M3 branch code-review and recorded here rather than silently carried.
@@ -275,16 +283,27 @@ M4 owns both. Neither is answerable by the stateless verifier alone.
   half: a proof lifted into a *different* session is refused by cryptography
   (`stale-nonce`, §7.1). The gate must issue a per-session nonce and retire it after
   one use. **8een is not replay-safe until M4 and must never be described as such.**
-- **Credential freshness (expiry).** An **expired credential must not verify.** This is
-  untested today (§7.1a): M2 made the x509 chain clock real, but the credential's own
-  clock is a frozen constant, so the MSO `validFrom`/`validUntil` window is never
-  actually exercised. M4 must (a) drive the credential clock from real time, (b) add
-  an `expired-credential` fixture to `tools/mkfixture` — same shape as `stale-nonce` —
-  and (c) assert the refusal in the integration matrix.
+- **Credential freshness (expiry) — DONE (M4 piece 1, 2026-07-15).** An expired credential
+  **must not verify by default.** Built: the verifier echoes the timestamp it checked the
+  window against (patch 0003), and `src/verdict.js` bounds it against the real clock. The
+  build surfaced *why* this was never exercised — the window was checked against a `now` the
+  **prover** declares, never real time (§7.1a) — so (a) "drive the credential clock from real
+  time" became a real verify-path bound, not a fixture tweak; (b) the `expired-credential`
+  fixture was added to `tools/mkfixture`; (c) the refusal is asserted in the integration
+  matrix (plus a deterministic unit boundary). **Amendment:** this is now "must not verify
+  **by default**, configurable" via `requireCurrentValidity` (§9 D7) — an expired ID still
+  *proves adulthood*, so age-only sites may opt to accept it; the default stays closed.
+- **Session freshness (nonce) — STILL OPEN.** A byte-identical proof replayed in its own
+  session is **accepted** today, by design — the verifier has no memory. M2 proved the
+  adjacent half: a proof lifted into a *different* session is refused by cryptography
+  (`stale-nonce`, §7.1). The gate must issue a per-session nonce and retire it after one use.
+  **8een is not replay-safe until this lands (M4 piece 2) and must never be described as
+  such.**
 
 Both must fail **closed**, and under the §1 invariant: an expired or stale
 presentation is a real verdict (`ok:true, over_threshold:false`), never a broken
-verifier — and never "you are underage."
+verifier — and never "you are underage." A date that could not be **read** is the one
+exception in the other direction: `ok:false` (`freshness_unknown`), never a "no".
 
 ## 8. NO-GO table (discussed and rejected — do not reopen silently)
 
@@ -311,6 +330,7 @@ verifier — and never "you are underage."
 | D4 | **Stack is vanilla Node** — owner preference for simplicity/speed/vanilla, confirmed viable since the C++ core is subprocess-driven either way. |
 | D5 | **Success = trust discrimination** (§7.1, owner's wording: "works on own cert and not others"). |
 | D6 | **Threshold configurable** (the age in "over N"); output remains a single bit. |
+| D7 | **Credential currency is configurable** (`requireCurrentValidity`, default **on**), confirmed 2026-07-15. An expired credential still proves adulthood (age is monotonic), so age-only sites may opt to accept it while KYC-style flows keep the secure default. This amends §7.4b's absolute "expired must not verify" to "must not verify **by default**." The invariant is preserved in both modes; a date that cannot be read is `ok:false`, never a "no". |
 
 ## 10. Naming & publishing
 

@@ -4,6 +4,36 @@ All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) ·
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-07-16
+
+**Runtime change** (first since `0.1.0`): a credential-currency gate is now enforced by
+default. M4 piece 1 of 3 — the endpoint/middleware/demo and the per-session nonce are still
+to come, and 8een remains **not replay-safe**.
+
+### M4 — the credential-currency gate (piece 1, PASSED)
+- **An expired credential no longer verifies.** The verifier was checking the credential's
+  validity window against a `now` the *prover* supplies inside the proof, never the real
+  clock — so an expired credential verified, indistinguishable from a live one (measured
+  fail-first). The verifier now echoes the timestamp it used and 8een bounds it against the
+  real clock. [evidence](docs/02-evidence/M4-EVIDENCE.md), closes PRD §7.1a.
+- **New option `requireCurrentValidity`** (default **on**). An expired presentation is a real
+  verdict — `over_threshold: false`, reason `credential_expired` — never "underage"; an
+  unreadable presentation date is `ok: false`, reason `freshness_unknown`, never a "no". Turn
+  it **off** for age-only sites: an expired ID still proves adulthood (age is monotonic), so
+  a KYC-style flow keeps the secure default while an age-gate may opt out. Amends PRD §7.4b
+  to "reject by default, configurable" (owner decision §9 D7).
+- **New option `toleranceMs`** (default 5 min) — how far the presentation date may sit from
+  the real clock. Validated at construction; a malformed value fails **closed**.
+- **New `REASONS`:** `credential_expired` (`ok:true, over_threshold:false`) and
+  `freshness_unknown` (`ok:false, over_threshold:null`).
+- **Requires a verifier that echoes the timestamp** (`poc/patches/0003-m4-echo-verified-timestamp.patch`,
+  now part of the build baseline). Against a verifier without it, the default-on gate returns
+  `freshness_unknown` (fail-closed) until you rebuild or set `requireCurrentValidity: false`.
+
+### Dev-only
+- `tools/mkfixture` threads a per-credential clock (real-time *fresh* / past *expired*) and
+  adds an `expired-credential` fixture; the deterministic byte-exact layout path is unchanged.
+
 ## [0.1.3] — 2026-07-15
 
 **No runtime change** — `src/` and `types/` are byte-identical and dependencies are still
