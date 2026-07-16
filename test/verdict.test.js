@@ -390,3 +390,53 @@ test('M4: Verifier rejects a non-numeric/negative toleranceMs at construction', 
   assert.doesNotThrow(() => new Verifier(null, 'age_over_18', { toleranceMs: undefined }));
   assert.doesNotThrow(() => new Verifier(null, 'age_over_18'));
 });
+
+// Single-use CANNOT fail open: enabling it without the secret + shared store it
+// depends on must throw LOUD at construction, never fall back to something that only
+// looks replay-safe. This is the guard that keeps the "looks safe, isn't" trap out --
+// and per the project's own lesson, a guard you have not watched FIRE is not a guard.
+// Synchronous (no service needed), so it lives in the fast suite.
+test('M4 piece 2: Verifier refuses requireSingleUse without the secret and store it needs', () => {
+  const goodSecret = Buffer.alloc(32, 7);
+  const goodStore = { spend: () => true };
+
+  // No secret at all.
+  assert.throws(
+    () => new Verifier(null, 'age_over_18', { requireSingleUse: true, nonceStore: goodStore }),
+    /challengeSecret/,
+    'requireSingleUse without a secret must throw',
+  );
+  // Secret present, but no store.
+  assert.throws(
+    () => new Verifier(null, 'age_over_18', { requireSingleUse: true, challengeSecret: goodSecret }),
+    /nonceStore/,
+    'requireSingleUse without a store must throw',
+  );
+  // A store that is not a real store (no atomic spend) is rejected too.
+  assert.throws(
+    () => new Verifier(null, 'age_over_18', {
+      requireSingleUse: true, challengeSecret: goodSecret, nonceStore: { has: () => false },
+    }),
+    /nonceStore/,
+    'a store without spend() must throw',
+  );
+  // A weak secret (< 16 bytes) must fail at construction, not at first request.
+  assert.throws(
+    () => new Verifier(null, 'age_over_18', {
+      requireSingleUse: true, challengeSecret: Buffer.alloc(8), nonceStore: goodStore,
+    }),
+    /16 bytes/,
+    'a weak secret must throw',
+  );
+
+  // Non-vacuity: fully configured single-use must NOT throw, and single-use OFF (the
+  // default) must NOT require any of this -- otherwise the throws above would pass for
+  // the wrong reason.
+  assert.doesNotThrow(
+    () => new Verifier(null, 'age_over_18', {
+      requireSingleUse: true, challengeSecret: goodSecret, nonceStore: goodStore,
+    }),
+    'a correctly configured single-use verifier must construct',
+  );
+  assert.doesNotThrow(() => new Verifier(null, 'age_over_18'), 'single-use off needs no store/secret');
+});

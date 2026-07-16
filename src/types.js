@@ -17,6 +17,28 @@
  */
 
 /**
+ * A single-use challenge, minted by `issueChallenge()`. Send `transcript` to the
+ * wallet to bind the proof to; keep nothing (the nonce authenticates itself).
+ *
+ * @typedef {object} Challenge
+ * @property {Uint8Array} nonce        The self-authenticating nonce (random ‖ expiry ‖ HMAC).
+ * @property {Uint8Array} transcript   The session transcript bytes to hand the wallet.
+ * @property {number} expiresAt        When the challenge stops being answerable (ms since epoch).
+ */
+
+/**
+ * The adopter's spent-nonce set -- the ONE piece of state 8een refuses to hold.
+ * A single atomic operation, so there is no check-then-set race under concurrent
+ * replays. Maps directly onto Redis `SET key 1 NX PX ttl`.
+ *
+ * @typedef {object} NonceStore
+ * @property {(nonceKey: string, ttlMs: number) => Promise<boolean> | boolean} spend
+ *   Record `nonceKey` if absent and return `true` (first, legitimate use); return
+ *   `false` if it was already present (a replay). `ttlMs` is how long to remember
+ *   it -- exactly until the nonce expires, never longer.
+ */
+
+/**
  * One exchange with the verifier, before it means anything. `service.verify()`
  * produces these; `classify()` turns them into a verdict.
  *

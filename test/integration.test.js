@@ -44,7 +44,8 @@ import { readFileSync, existsSync, mkdtempSync, writeFileSync, readdirSync } fro
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Verifier, VerifierService, REASONS } from '../src/index.js';
+import { Verifier, VerifierService, REASONS, issueChallenge, InMemoryNonceStore } from '../src/index.js';
+import { randomBytes } from 'node:crypto';
 
 const POC = new URL('../poc/longfellow-zk/', import.meta.url).pathname;
 const SERVER_DIR = join(POC, 'reference/verifier-service/server');
@@ -572,6 +573,93 @@ test('M4: an expired credential is refused when currency is required, accepted w
     assert.equal(r.ok, true);
     assert.equal(r.over_threshold, true, 'an expired ID still proves the holder is an adult');
     assert.equal(r.reason, REASONS.VERIFIED);
+  });
+});
+
+/**
+ * M4 piece 2 — the single-use nonce, end to end on real longfellow. This is the
+ * COMPLEMENT of "DOCUMENTS THE GAP" above: that test proves the stateless verifier
+ * accepts a byte-identical replay by design; this proves that with requireSingleUse
+ * on, the SAME replay is refused.
+ *
+ * The proof itself is impeccable — it accepts at every layer (ZK, chain, claim,
+ * currency). The only thing that changes between the first submission and the second
+ * is 8een's memory that the nonce was already spent. So a green here cannot come from
+ * a broken proof; it can only come from the spent-nonce gate firing. Non-vacuity is
+ * built in four ways:
+ *   - the FIRST submission ACCEPTS (the gate does not reject everything),
+ *   - the SECOND, byte-identical, is REPLAY_DETECTED,
+ *   - a proof bound to a nonce this verifier did NOT issue is SESSION_UNKNOWN
+ *     (a random-nonce fixture — the gate is not accepting any nonce), and
+ *   - with the gate OFF, the same replay is accepted AGAIN (proving the gate is what
+ *     refuses it, mirroring the piece-1 non-vacuity argument).
+ *
+ * Every refusal is the §1 invariant intact: a replay/unknown session is {ok:false,
+ * over_threshold:null} — "we cannot confirm this is fresh" — never "you are underage".
+ *
+ * The fixture is minted here (not in the shared set) because it must bind to a nonce
+ * 8een ISSUED under a secret this test holds. The challenge is issued with a 24 h TTL
+ * so it cannot expire during the slow suite (see FRESHNESS_TOLERANCE_MS rationale).
+ */
+test('M4 piece 2: a replayed proof is refused when single-use is required, accepted when it is not', proofSuite, async (t) => {
+  const secret = randomBytes(32);
+  // A long TTL: the suite mints once and verifies across minutes of circuit loads, so
+  // a 5-min default could expire before this test runs and turn accept into SESSION_UNKNOWN.
+  const challenge = issueChallenge({ secret, ttlMs: FRESHNESS_TOLERANCE_MS });
+  const nonceHex = Buffer.from(challenge.nonce).toString('hex');
+
+  // Mint a fixture set that INCLUDES single-use.json, bound to that exact nonce.
+  const dir = mintFixtures(['-session-nonce', nonceHex]);
+  const singleUse = () => proofFrom(dir, 'single-use');
+
+  const service = new VerifierService({
+    binary: join(SERVER_DIR, 'server'),
+    circuitDir: CIRCUIT_SOURCE,
+    caCerts: join(dir, 'caCerts.pem'),
+    port: 8922,
+  });
+  await service.start();
+  t.after(() => service.stop());
+
+  const store = new InMemoryNonceStore({ quiet: true });
+  // requireCurrentValidity OFF here: this test is about the nonce, not the credential
+  // clock, and the fixture is freshly minted so currency is not the variable.
+  const strict = new Verifier(service, 'age_over_18', {
+    requireCurrentValidity: false,
+    requireSingleUse: true,
+    challengeSecret: secret,
+    nonceStore: store,
+    challengeTtlMs: FRESHNESS_TOLERANCE_MS,
+  });
+
+  await t.test('first, legitimate use of the issued nonce is accepted', async () => {
+    const r = await strict.check(singleUse());
+    assert.equal(r.ok, true);
+    assert.equal(r.over_threshold, true);
+    assert.equal(r.reason, REASONS.VERIFIED);
+  });
+
+  await t.test('the byte-identical replay is REFUSED -- ok:false, never a "no"', async () => {
+    const r = await strict.check(singleUse());
+    assert.equal(r.ok, false, 'a spent nonce must not verify again');
+    assert.equal(r.over_threshold, null, 'a replay is never a verdict about a person');
+    assert.equal(r.reason, REASONS.REPLAY_DETECTED);
+  });
+
+  await t.test('a proof bound to a nonce this verifier never issued is SESSION_UNKNOWN', async () => {
+    // VALID from the SAME set carries a fresh RANDOM nonce, not one we issued.
+    const r = await strict.check(proofFrom(dir, 'valid'));
+    assert.equal(r.ok, false);
+    assert.equal(r.over_threshold, null);
+    assert.equal(r.reason, REASONS.SESSION_UNKNOWN);
+  });
+
+  await t.test('with single-use OFF, the SAME replay is accepted again -- the gate is what refuses it', async () => {
+    const lax = new Verifier(service, 'age_over_18', { requireCurrentValidity: false });
+    const first = await lax.check(singleUse());
+    const second = await lax.check(singleUse());
+    assert.equal(first.over_threshold, true);
+    assert.equal(second.over_threshold, true, 'stateless verifier has no memory when the gate is off');
   });
 });
 

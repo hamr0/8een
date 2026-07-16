@@ -90,10 +90,17 @@ half-load, and prove it can't.
     frozen `frozenClock` remains only for the deterministic layout tests. The circuit's
     *internal* clock is still frozen and deliberately untouched — we bound its input
     from outside, we never change its maths (NO-GO #8). See `docs/02-evidence/M4-EVIDENCE.md`.
-  - **Freshness's OTHER half — the per-session nonce — is still open (M4 piece 2).** The
-    verifier remains stateless; a byte-identical replay in its own session is still
-    accepted by design. **8een is not replay-safe. Do not describe it as such**, and do
-    not "fix" replay in the verify module.
+  - **Freshness's OTHER half — the per-session nonce — landed (M4 piece 2, 2026-07-16),
+    opt-in.** `src/challenge.js` issues a self-authenticating nonce and spends it once through
+    an adopter-supplied `nonceStore`; `requireSingleUse` (default **off**) wires it into
+    `Verifier.check`. **The verify module (`classify`) is still stateless — do NOT put replay
+    logic there.** The gate lives one layer up, in `check()`/`challenge.js`, and only ever
+    downgrades an accept to `ok:false` (`replay_detected`/`session_unknown`), never a "no".
+    NO-GO #7 holds: the spent-nonce set is the adopter's, 8een stores nothing. The passing test
+    asserting a byte-identical replay is **accepted with the gate off** still exists and must
+    stay — it documents the stateless default. **8een is replay-safe only when `requireSingleUse`
+    is on; do not describe it as replay-safe by default.** Still open: the HTTP endpoint /
+    middleware / demo site (§6, §7.2) — piece 3.
 - **Measure before you write a number.** "A few seconds" was wrong by 10× once
   already and had to be retracted in writing.
 

@@ -4,6 +4,29 @@ All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) ·
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-07-16
+
+**Runtime change:** opt-in replay defence (the single-use nonce), M4 piece 2 of 3. The
+endpoint/middleware/demo site is the last piece. 8een is now replay-safe **when
+`requireSingleUse` is on** — it stays not-replay-safe by default.
+
+### M4 — the single-use nonce (piece 2, PASSED)
+- **Replay defence, opt-in.** With `requireSingleUse` on, only a proof bound to a live,
+  unspent challenge THIS verifier issued is accepted. A replay is `ok:false, replay_detected`;
+  an unrecognized/expired challenge is `ok:false, session_unknown` — never a "no". Closes PRD
+  §7.4a. [evidence](docs/02-evidence/M4-EVIDENCE.md).
+- **New `src/challenge.js`:** `issueChallenge()` mints a self-authenticating nonce
+  (`random ‖ expiry ‖ HMAC`) so issuance stores nothing; `applySingleUse()` spends it once
+  through the adopter's store. Also exported: `inspectChallenge`, `InMemoryNonceStore` (dev only).
+- **New `Verifier` options:** `requireSingleUse` (default **off**), `challengeSecret` (HMAC key,
+  ≥16 bytes, shared across replicas), `nonceStore` (atomic `spend(key, ttlMs)`; e.g. Redis
+  `SET NX PX`), `challengeTtlMs` (default 5 min). New method `verifier.issueChallenge()`.
+- **Fails closed when on:** enabling `requireSingleUse` without a secret **and** a store throws
+  at construction — 8een never falls back to a per-process store that only looks replay-safe.
+- **New `REASONS`:** `replay_detected` and `session_unknown` (both `ok:false, over_threshold:null`).
+- **`nonceStore` is the adopter's** — the one piece of state 8een refuses to hold (NO-GO #7).
+  Owner decision §9 D8. No server patch required (the transcript already binds).
+
 ## [0.2.0] — 2026-07-16
 
 **Runtime change** (first since `0.1.0`): a credential-currency gate is now enforced by

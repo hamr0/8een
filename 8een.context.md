@@ -17,9 +17,12 @@ mean.
 
 **Is not — and this matters more than anything else on this page:**
 
-- **Not a gate.** It does not manage sessions, nonces, cookies, or rate limits.
-- **Not replay-safe.** See [Threat model](#threat-model-summary). This is the one
-  that will bite you.
+- **Not a full gate.** It does not manage sessions, cookies, or rate limits. It
+  *can* now issue and spend single-use nonces (opt-in `requireSingleUse`), but you
+  still own the session plumbing and the shared store it spends against.
+- **Not replay-safe by default.** Replay defence is opt-in. With `requireSingleUse`
+  off (the default), a byte-identical proof replayed in its own session is accepted.
+  See [Threat model](#threat-model-summary). This is the one that will bite you.
 - **Not an issuer.** It mints nothing and stores nothing.
 - **Not usable standalone yet.** It drives a longfellow verifier binary that this
   package does not ship. See [Constraints](#constraints).
@@ -93,6 +96,20 @@ Throws if it cannot produce a verifier you can trust. See [All options](#all-opt
 
 Never throws. `proof` is `{transcript: Uint8Array, deviceResponse: Uint8Array}`.
 
+### `verifier.issueChallenge() → Challenge`
+
+Only when started with `requireSingleUse`. Mints a single-use challenge
+`{nonce, transcript, expiresAt}` bound to this verifier's secret and TTL. Send
+`transcript` to the wallet; on the way back, `check()` spends the nonce. 8een stores
+nothing to issue it — the nonce authenticates itself (`random ‖ expiry ‖ HMAC`).
+
+### `InMemoryNonceStore`
+
+A `nonceStore` for single-process **development only**. It is not shared across
+processes, so it does **not** stop replays behind multiple replicas — use Redis
+(`SET key NX PX ttl`) or an equivalent in production. You must construct it by name;
+8een never falls back to it silently.
+
 ### `verifier.stop() → Promise<void>`
 
 SIGTERM, then SIGKILL after the grace period.
@@ -122,6 +139,8 @@ The closed set of `reason` values. Branch on these, never on `detail`.
 | `false` | `response_unintelligible` | We did not understand the response. Refusing to guess. |
 | `false` | `invalid_request` | You handed us something that is not a proof. |
 | `false` | `freshness_unknown` | Currency required, but no presentation date could be read. We could not judge — **not** a "no". |
+| `false` | `replay_detected` | Single-use required and this nonce was already spent — a replay. We cannot confirm freshness. **Not** a "no". |
+| `false` | `session_unknown` | Single-use required, but the proof is not bound to a live challenge we issued (unrecognized/forged/expired nonce). **Not** a "no". |
 
 ### `classify(raw, opts?) → Verdict`
 
@@ -138,6 +157,10 @@ different transport. Never throws, whatever you hand it.
 | `threshold` | `18` | The age in "over N". The output stays one bit. |
 | `requireCurrentValidity` | `true` | Refuse a credential whose validity window is not current. Expired → `credential_expired` (a real "no"); unreadable date → `freshness_unknown` (`ok:false`). See [Credential currency](#credential-currency). |
 | `toleranceMs` | `300000` | How far the presentation date may sit from the real clock (5 min). Only used when `requireCurrentValidity`. |
+| `requireSingleUse` | `false` | Turn on replay defence: only a proof bound to a live, unspent challenge THIS verifier issued is accepted. Needs `challengeSecret` **and** `nonceStore`; enabling without both throws at construction. See [Replay defence](#threat-model-summary). |
+| `challengeSecret` | *req. if `requireSingleUse`* | HMAC key that authenticates 8een's own nonces. **≥ 16 bytes, stable across restarts, shared across every replica.** A per-process secret would reject a sibling's nonces. |
+| `nonceStore` | *req. if `requireSingleUse`* | Your shared spent-nonce set: `{ spend(key, ttlMs) → boolean }`, atomic (e.g. Redis `SET NX PX`). `InMemoryNonceStore` is provided for single-process **dev only** — it does not stop replays across replicas. |
+| `challengeTtlMs` | `300000` | Nonce lifetime (5 min). A spent nonce need only be remembered this long. |
 | `vicalUrl` | **none** | Opt in to a network-fetched issuer trust list (VICAL). |
 | `host` | `127.0.0.1` | Loopback, deliberately. |
 | `port` | `8899` | |
@@ -207,23 +230,36 @@ trusted. `verdict.js` is pure, never throws, and turns one exchange into one bit
 
 ## Threat model summary
 
-**Replay is accepted. This module does not stop it and does not pretend to.**
+**Replay defence is opt-in. With `requireSingleUse` off (the default), replay is
+accepted and 8een does not pretend otherwise.**
 
-The verifier is stateless. Hand it the same valid proof a thousand times and it
-will say "valid" a thousand times — because it *is* valid. A replayed proof is
+The verifier itself is stateless. Hand it the same valid proof a thousand times and
+it will say "valid" a thousand times — because it *is* valid. A replayed proof is
 mathematically indistinguishable from a fresh one; the cryptography cannot know a
 proof has been spent, because knowing that requires *memory*.
 
-**Freshness is your job.** The relying party must:
+### Replay defence (`requireSingleUse`)
 
-1. Mint a **nonce** per visit — a random number *you* generate, before any proof exists.
-2. Send it to the wallet, which binds it into the session transcript.
-3. On the way back: check the nonce is one you issued, **spend it** (delete it), and
-   refuse any proof carrying a nonce you have already spent or never issued.
+Turn it on and 8een supplies the memory-shaped part of the flow while staying
+stateless itself:
 
-Skip step 3 and a fourteen-year-old walks in with a borrowed proof file, while
-8een correctly reports "valid" every single time. **A gate built on this module
-without nonce bookkeeping is not an age gate.**
+1. `const {nonce, transcript} = verifier.issueChallenge()` — a per-visit challenge,
+   self-authenticating (8een stores nothing to mint it).
+2. Send `transcript` to the wallet, which binds the proof to it. longfellow enforces
+   that binding: a proof bound to nonce A is refused under nonce B.
+3. `verifier.check({transcript, deviceResponse})` — on an otherwise-valid proof, 8een
+   confirms the nonce is one it issued and unexpired, **spends it once**, and refuses
+   the byte-identical replay: `ok:false, replay_detected`.
+
+**What is still yours:** the session plumbing, and a **shared** `nonceStore` (the
+spent-nonce set — Redis or equivalent). That store is the one irreducible piece of
+state; 8een holds none of it. `InMemoryNonceStore` is dev-only and does not hold
+across replicas.
+
+**With it off**, skip nonce bookkeeping entirely and a fourteen-year-old walks in
+with a borrowed proof file, while 8een correctly reports "valid" every single time.
+**A gate built on this module without single-use is not an age gate** unless you do
+the equivalent nonce bookkeeping yourself.
 
 Other properties:
 
