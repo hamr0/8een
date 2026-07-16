@@ -137,6 +137,11 @@ var (
 	namespace = "org.iso.18013.5.1"
 )
 
+// sessionNonceHex, when set from mkfixture's -session-nonce flag, is the hex nonce
+// the M4 single-use fixture binds to (an 8een-issued challenge nonce). Empty by
+// default: the fixture is only emitted when the JS harness supplies a nonce.
+var sessionNonceHex = ""
+
 const (
 	// circuitHash0 names kZkSpecs[0]: 1 attribute, ZK spec version 7, system
 	// longfellow-libzk-v1. The prebuilt circuit file on disk is named by this hash;

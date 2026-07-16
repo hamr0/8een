@@ -176,7 +176,7 @@ bit; the API physically cannot return an age.
 | **M1 — verify module** | The pure verdict module + core wrapper, behavior-level tests incl. all §7 negatives. | "The binary's output can be classified into a trustworthy one-bit verdict." |
 | **M2 — full local loop** | Test-CA + prover CLI; end-to-end offline: mint → prove → verify. Unlinkability transcript check (§7.3). | "We can generate spec-conformant credentials/proofs ourselves." |
 | **M3 — EU interop** | Verify a proof produced by the EU AV app (Android, driven via baremobile/emulator). **Revised by the EU-stack audit (2026-07-14):** any flavor will do — ZK is carried in all of them — but the proof **must be captured over the browser DC API or proximity, never OpenID4VP**, which cannot emit one (`EU-STACK-AUDIT.md` §2). Differential-test the same proofs against `av-dc-api-backend` (vendored Multipaz, deployed and live) as an independent oracle. | "The EU app's proofs are format-compatible with upstream longfellow." **Fallback if brittle:** differential test vs. `av-dc-api-backend` and/or longfellow's reference prover; real-app interop documented as pending in the dossier. |
-| **M4 — the gate** | Endpoint + middleware + demo site. All AGENT_RULES invariants apply (rate-limiting, unhappy paths, no `0.0.0.0`). Probe-style check: middleware consumes only the verify module's public surface. **Owns "is this presentation still good *right now*"** — both halves: (a) per-session nonce, single-use; (b) **credential validity window — an expired credential must not verify** (see §7.4). **Progress:** piece 1 — (b) credential currency — **DONE 2026-07-15** (`requireCurrentValidity`, §7.1a/§7.4b, `docs/02-evidence/M4-EVIDENCE.md`). Remaining: (a) the nonce, and the endpoint/middleware/demo. | "A mid-size site can adopt this without thinking." |
+| **M4 — the gate** | Endpoint + middleware + demo site. All AGENT_RULES invariants apply (rate-limiting, unhappy paths, no `0.0.0.0`). Probe-style check: middleware consumes only the verify module's public surface. **Owns "is this presentation still good *right now*"** — both halves: (a) per-session nonce, single-use; (b) **credential validity window — an expired credential must not verify** (see §7.4). **Progress:** piece 1 — (b) credential currency — **DONE 2026-07-15** (`requireCurrentValidity`, §7.1a/§7.4b). Piece 2 — (a) the single-use nonce — **DONE 2026-07-16** (`requireSingleUse`, opt-in, §7.4/§9 D8). Both in `docs/02-evidence/M4-EVIDENCE.md`. Remaining: the endpoint/middleware/demo site + the <30-min README-integration timing. | "A mid-size site can adopt this without thinking." |
 | **M5 — dossier** | The refutation page with the live demo embedded. | "The argument survives being written down with citations." |
 
 POC graduates by **rewriting, never shipping** (AGENT_RULES).
@@ -278,11 +278,11 @@ tooling; the shipped package (`src/`, `types/`) is unaffected.
 "Is this presentation still good **right now**" is one question with two halves, and
 M4 owns both. Neither is answerable by the stateless verifier alone.
 
-- **Session freshness (nonce).** A byte-identical proof replayed in its own session is
-  **accepted** today, by design — the verifier has no memory. M2 proved the adjacent
-  half: a proof lifted into a *different* session is refused by cryptography
-  (`stale-nonce`, §7.1). The gate must issue a per-session nonce and retire it after
-  one use. **8een is not replay-safe until M4 and must never be described as such.**
+- **Session freshness (nonce) — DONE (M4 piece 2, 2026-07-16), opt-in.** The gate issues a
+  per-session nonce and retires it after one use (`requireSingleUse`, default off). A replay
+  is refused (`replay_detected`); the stateless verifier alone still accepts one, which is
+  why the gate is required. M2 proved the adjacent half: a proof lifted into a *different*
+  session is refused by cryptography (`stale-nonce`, §7.1). Detail below.
 - **Credential freshness (expiry) — DONE (M4 piece 1, 2026-07-15).** An expired credential
   **must not verify by default.** Built: the verifier echoes the timestamp it checked the
   window against (patch 0003), and `src/verdict.js` bounds it against the real clock. The
@@ -293,17 +293,28 @@ M4 owns both. Neither is answerable by the stateless verifier alone.
   matrix (plus a deterministic unit boundary). **Amendment:** this is now "must not verify
   **by default**, configurable" via `requireCurrentValidity` (§9 D7) — an expired ID still
   *proves adulthood*, so age-only sites may opt to accept it; the default stays closed.
-- **Session freshness (nonce) — STILL OPEN.** A byte-identical proof replayed in its own
-  session is **accepted** today, by design — the verifier has no memory. M2 proved the
-  adjacent half: a proof lifted into a *different* session is refused by cryptography
-  (`stale-nonce`, §7.1). The gate must issue a per-session nonce and retire it after one use.
-  **8een is not replay-safe until this lands (M4 piece 2) and must never be described as
-  such.**
+- **Session freshness (nonce) — DONE (M4 piece 2, 2026-07-16), opt-in.** The gate now issues
+  a per-session nonce and retires it after one use. Built: `src/challenge.js` mints a
+  self-authenticating nonce (`random ‖ expiry ‖ HMAC`, so issuance stores nothing), binds it
+  into the session transcript, and — on an otherwise-valid proof — confirms 8een issued it,
+  is unexpired, and **spends it once** through an adopter-supplied atomic `nonceStore`. A
+  replay is `ok:false, replay_detected`; an unrecognized/expired challenge is `ok:false,
+  session_unknown` — never a "no". The piece-2 spike proved the load-bearing fact first:
+  longfellow hashes the transcript verbatim, so an arbitrary-length 8een nonce round-trips
+  and a wrong nonce is refused at the ZK layer — no CBOR parse, no longfellow crypto touched
+  (NO-GO #8). **Amendment:** unlike currency, replay defence **cannot** default on — it needs
+  adopter infrastructure (a shared secret, a shared spent-nonce store, and issuing
+  challenges) it cannot invent, so a default-on would be *broken* by default, not secure.
+  Hence `requireSingleUse` defaults **off** and fails **closed when on** (throws if enabled
+  without a secret + store); NO-GO #7 holds — the store is the adopter's, 8een keeps nothing
+  (§9 D8). **8een is not replay-safe unless `requireSingleUse` is on, and must not be
+  described as such by default.**
 
 Both must fail **closed**, and under the §1 invariant: an expired or stale
 presentation is a real verdict (`ok:true, over_threshold:false`), never a broken
-verifier — and never "you are underage." A date that could not be **read** is the one
-exception in the other direction: `ok:false` (`freshness_unknown`), never a "no".
+verifier — and never "you are underage." A date that could not be **read**, a replayed
+nonce, or a session we did not issue are the exceptions in the other direction:
+`ok:false` (`freshness_unknown` / `replay_detected` / `session_unknown`), never a "no".
 
 ## 8. NO-GO table (discussed and rejected — do not reopen silently)
 
@@ -331,6 +342,7 @@ exception in the other direction: `ok:false` (`freshness_unknown`), never a "no"
 | D5 | **Success = trust discrimination** (§7.1, owner's wording: "works on own cert and not others"). |
 | D6 | **Threshold configurable** (the age in "over N"); output remains a single bit. |
 | D7 | **Credential currency is configurable** (`requireCurrentValidity`, default **on**), confirmed 2026-07-15. An expired credential still proves adulthood (age is monotonic), so age-only sites may opt to accept it while KYC-style flows keep the secure default. This amends §7.4b's absolute "expired must not verify" to "must not verify **by default**." The invariant is preserved in both modes; a date that cannot be read is `ok:false`, never a "no". |
+| D8 | **Replay defence is opt-in and delegates its state** (`requireSingleUse`, default **off**), confirmed 2026-07-16. Unlike currency, single-use cannot default on: it needs adopter infrastructure (a shared HMAC secret, a shared spent-nonce store, and issuing challenges) it cannot invent, so a default-on would be *broken* by default. It fails **closed when on** — enabling it without a `challengeSecret` **and** a `nonceStore` throws at construction; 8een never falls back to a per-process store that only looks replay-safe. The spent-nonce set is the adopter's (Redis or equivalent), so NO-GO #7 holds — 8een stores nothing. This closes §7.4a's "the gate must issue a per-session nonce and retire it after one use." |
 
 ## 10. Naming & publishing
 

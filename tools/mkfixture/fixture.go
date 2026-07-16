@@ -28,6 +28,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -298,6 +299,13 @@ type scenarioOpts struct {
 	staleNonce  bool // prove under transcript A, present under B -> device-sig fails
 	mangleCert  bool // corrupt the leaf signature -> chain validation fails
 
+	// sessionNonce, when non-nil, is the exact session nonce to present under, in
+	// place of a fresh random one. The M4 single-use fixture uses it to bind a proof
+	// to a nonce 8een ISSUED (so src/challenge.js authenticates it via HMAC). The
+	// bytes are opaque to longfellow (it hashes the transcript verbatim), so any
+	// length works — see the piece-2 spike.
+	sessionNonce []byte
+
 	// clock is the credential's validity clock. The zero value means "fresh": a
 	// real-time clock is filled in by scenario(). The expired-credential fixture is
 	// the one caller that sets it, to a window that closed in the past.
@@ -321,8 +329,12 @@ func scenario(circuit []byte, o scenarioOpts) (fixture, caDER []byte, err error)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s: mint: %w", o.name, err)
 	}
-	transcript, err := newSessionTranscript()
-	if err != nil {
+	var transcript []byte
+	if o.sessionNonce != nil {
+		// Bind to a caller-supplied nonce (the M4 single-use fixture: a nonce 8een
+		// issued). Same builder as the random path, so the frame bytes are identical.
+		transcript = sessionTranscript(o.sessionNonce)
+	} else if transcript, err = newSessionTranscript(); err != nil {
 		return nil, nil, fmt.Errorf("%s: %w", o.name, err)
 	}
 	m, err := cred.Present(transcript)
@@ -728,9 +740,38 @@ func GenFixtures(circuitDir, outDir string) error {
 		}
 	}
 
+	// 10. single-use (M4 piece 2) — a valid over-18 proof from a TRUSTED issuer, bound
+	//     to a session nonce 8een ISSUED (passed in via -session-nonce). The proof
+	//     itself ACCEPTS at every layer (ZK, chain, claim, currency) — nothing here is
+	//     wrong with it. What the JS harness proves is orthogonal to the proof: submit
+	//     it TWICE through a Verifier with requireSingleUse on, and the SECOND
+	//     submission — byte-identical — must be refused as a replay. That refusal lives
+	//     entirely in src/challenge.js (the spent-nonce set), never in the proof, so it
+	//     can only be exercised with a nonce the verifier recognizes as its own. Emitted
+	//     only when a nonce is supplied; otherwise skipped, so the base matrix is
+	//     unchanged.
+	if sessionNonceHex != "" {
+		nonce, err := hex.DecodeString(sessionNonceHex)
+		if err != nil {
+			return fmt.Errorf("single-use: -session-nonce is not valid hex: %w", err)
+		}
+		fx, caDER, err := scenario(circuit, scenarioOpts{
+			name: "single-use", credValue: f5, wireValue: f5,
+			sessionNonce: nonce, want: expectAccept,
+		})
+		if err != nil {
+			return err
+		}
+		trusted = append(trusted, caDER)
+		if err := write("single-use", fx); err != nil {
+			return err
+		}
+	}
+
 	// Trust PEM: the CAs of every fixture that should chain — valid, underage,
-	// tampered, stale-nonce, mangled-cert, substituted-claim, and the unlinkability
-	// issuer. ONLY untrusted-issuer's CA is withheld: that omission is the entire
+	// tampered, stale-nonce, mangled-cert, substituted-claim, the unlinkability issuer,
+	// and single-use (when emitted). ONLY untrusted-issuer's CA is withheld: that
+	// omission is the entire
 	// negative test, and it is exactly the kind of thing a later edit silently undoes.
 	// Check it rather than trusting that we remembered.
 	for _, der := range trusted {

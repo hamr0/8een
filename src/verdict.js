@@ -39,6 +39,14 @@ export const REASONS = Object.freeze({
   // clock was supplied). We could not judge freshness, so we refuse to judge at all
   // -- never guess "expired". A missing reading is `ok:false`, never a "no".
   FRESHNESS_UNKNOWN: 'freshness_unknown',
+  // Single-use was required and this presentation was already spent in its session:
+  // a replay. We cannot confirm it is fresh, so `ok:false` -- a replay is not
+  // evidence a person is underage, only that we have seen these bytes before.
+  REPLAY_DETECTED: 'replay_detected',
+  // Single-use was required but the proof is not bound to a live challenge THIS
+  // verifier issued (unrecognized/forged nonce, or an expired challenge). "Ask for
+  // a fresh challenge", never "you are underage": `ok:false`, never a "no".
+  SESSION_UNKNOWN: 'session_unknown',
 });
 
 /**
@@ -71,11 +79,16 @@ const VERIFY_FAILURE = /^verification failure: return code (\d+)$/;
 const answered = (over_threshold, reason, detail) => ({ ok: true, over_threshold, reason, detail });
 
 /**
+ * A verdict meaning "we could not get a trustworthy answer": `ok:false`, and
+ * therefore `over_threshold:null` -- never `false`. Exported so the single-use gate
+ * (src/challenge.js) builds the same shape rather than duplicating this literal; the
+ * §1 invariant lives in exactly one place.
+ *
  * @param {string} reason
  * @param {string} [detail]
  * @returns {import('./types.js').Verdict}
  */
-const unanswerable = (reason, detail) => ({ ok: false, over_threshold: null, reason, detail });
+export const unanswerable = (reason, detail) => ({ ok: false, over_threshold: null, reason, detail });
 
 /**
  * Turn one exchange with the verifier into one bit.

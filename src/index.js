@@ -8,21 +8,34 @@
  *     else if (!v.ok) serveError();      // we are broken -- do NOT tell them they are underage
  *     else denyEntry();                  // a real, cryptographic no
  *
- * What this does NOT do, and must not be mistaken for doing: freshness. This
- * verifier is stateless. Hand it the same valid proof a thousand times and it
- * will say "valid" a thousand times, because it is -- the maths cannot know a
- * proof has been spent before. Replay defence is the relying party's duty: mint
- * a nonce per visit, bind it into the session transcript, and refuse to spend
- * the same nonce twice. That is the gate (M4), not the verifier (M1). Shipping
- * this module alone, without nonce bookkeeping, would verify beautifully and
- * still admit a fourteen-year-old holding a borrowed proof.
+ * Freshness is a SEPARATE layer, off by default. The verifier is stateless: hand
+ * it the same valid proof a thousand times and it will say "valid" a thousand
+ * times, because it is -- the maths cannot know a proof has been spent before.
+ * Replay defence is opt-in (`requireSingleUse`, M4 piece 2): when on, `check()`
+ * confirms the proof is bound to a live, unspent challenge THIS verifier issued
+ * (`issueChallenge()`) and spends it once through an adopter-supplied `nonceStore`
+ * -- 8een still stores nothing itself. With it OFF, shipping this module without
+ * your own nonce bookkeeping would verify beautifully and still admit a
+ * fourteen-year-old holding a borrowed proof. The gate only ever downgrades an
+ * accept to `ok:false` (`replay_detected`/`session_unknown`), never a "no".
  */
 
 import { VerifierService } from './service.js';
 import { classify, REASONS } from './verdict.js';
 import { provision, manifest } from './circuits.js';
+import { issueChallenge, inspectChallenge, applySingleUse, InMemoryNonceStore } from './challenge.js';
 
-export { REASONS, classify, VerifierService, provision, manifest };
+export {
+  REASONS,
+  classify,
+  VerifierService,
+  provision,
+  manifest,
+  issueChallenge,
+  inspectChallenge,
+  applySingleUse,
+  InMemoryNonceStore,
+};
 
 export class Verifier {
   /** @type {VerifierService} */
@@ -33,11 +46,21 @@ export class Verifier {
   #requireCurrentValidity;
   /** @type {number} */
   #toleranceMs;
+  /** @type {boolean} */
+  #requireSingleUse;
+  /** @type {Buffer|Uint8Array|string|undefined} */
+  #challengeSecret;
+  /** @type {import('./types.js').NonceStore|undefined} */
+  #nonceStore;
+  /** @type {number} */
+  #challengeTtlMs;
 
   /**
    * @param {VerifierService} service       a service you have already started
    * @param {string} requiredClaim          e.g. `age_over_18`
-   * @param {{requireCurrentValidity?: boolean, toleranceMs?: number}} [policy]
+   * @param {{requireCurrentValidity?: boolean, toleranceMs?: number,
+   *   requireSingleUse?: boolean, challengeSecret?: Buffer|Uint8Array|string,
+   *   nonceStore?: import('./types.js').NonceStore, challengeTtlMs?: number}} [policy]
    */
   constructor(service, requiredClaim, policy = {}) {
     const toleranceMs = policy.toleranceMs ?? 300_000;
@@ -47,10 +70,41 @@ export class Verifier {
     if (typeof toleranceMs !== 'number' || !Number.isFinite(toleranceMs) || toleranceMs < 0) {
       throw new TypeError(`toleranceMs must be a non-negative finite number, got ${policy.toleranceMs}`);
     }
+    const requireSingleUse = policy.requireSingleUse ?? false;
+    const challengeTtlMs = policy.challengeTtlMs ?? 300_000;
+    // Validate the ttl BEFORE it is used to mint the eager throwaway challenge below,
+    // so a bad value fails with this specific message rather than issueChallenge's.
+    if (typeof challengeTtlMs !== 'number' || !Number.isFinite(challengeTtlMs) || challengeTtlMs <= 0) {
+      throw new TypeError(`challengeTtlMs must be a positive finite number, got ${policy.challengeTtlMs}`);
+    }
+    // Single-use CANNOT fail open. If it is required, the two things it depends on --
+    // the secret that authenticates our own nonces, and the shared store that
+    // remembers spent ones -- must both be present, or we would silently verify
+    // replays while looking replay-safe (the exact "looks safe, isn't" trap). We
+    // never fall back to an in-memory store: that only holds per-process and would
+    // wave replays past behind multiple replicas. Fail LOUD at construction instead.
+    if (requireSingleUse) {
+      if (policy.challengeSecret == null) {
+        throw new TypeError('requireSingleUse needs a challengeSecret (>= 16 bytes) to authenticate nonces');
+      }
+      if (policy.nonceStore == null || typeof policy.nonceStore.spend !== 'function') {
+        throw new TypeError(
+          'requireSingleUse needs a nonceStore with an atomic spend(key, ttlMs); pass a shared ' +
+            'store (e.g. Redis SET NX PX), or InMemoryNonceStore for single-process dev only',
+        );
+      }
+      // Validate the secret eagerly by minting one throwaway challenge; a weak secret
+      // must be an immediate construction error, not a first-request surprise.
+      issueChallenge({ secret: policy.challengeSecret, ttlMs: challengeTtlMs });
+    }
     this.#service = service;
     this.#requiredClaim = requiredClaim;
     this.#requireCurrentValidity = policy.requireCurrentValidity ?? true;
     this.#toleranceMs = toleranceMs;
+    this.#requireSingleUse = requireSingleUse;
+    this.#challengeSecret = policy.challengeSecret;
+    this.#nonceStore = policy.nonceStore;
+    this.#challengeTtlMs = challengeTtlMs;
   }
 
   /**
@@ -58,7 +112,9 @@ export class Verifier {
    * keep it: the circuit load takes 44-73s, so it is a boot cost, not a per-request one.
    *
    * @param {import('./types.js').ServiceInit & {threshold?: number,
-   *   requireCurrentValidity?: boolean, toleranceMs?: number}} opts
+   *   requireCurrentValidity?: boolean, toleranceMs?: number,
+   *   requireSingleUse?: boolean, challengeSecret?: Buffer|Uint8Array|string,
+   *   nonceStore?: import('./types.js').NonceStore, challengeTtlMs?: number}} opts
    *   `caCerts` IS THE TRUST BOUNDARY: a proof is accepted only if its issuer chains
    *   to one of those roots. Choose it deliberately -- it is the whole security
    *   decision. `vicalUrl` opts in to a network-fetched issuer trust list (ISO
@@ -76,6 +132,18 @@ export class Verifier {
    *   defence is separate (the gate's per-session nonce), so this does not affect it.
    *   `toleranceMs` (default 5 min) is how far the presentation timestamp may sit
    *   from the real clock.
+   *
+   *   `requireSingleUse` (default `false`) turns on replay defence: only a proof
+   *   bound to a live, unspent challenge THIS verifier issued is accepted; a replay
+   *   is `ok:false` (`replay_detected`), an unrecognized/expired challenge is
+   *   `ok:false` (`session_unknown`) -- never a "no". Unlike currency, this cannot
+   *   default on: it needs adopter infrastructure it cannot invent -- a
+   *   `challengeSecret` (>= 16 bytes, stable and shared across replicas) and a
+   *   shared `nonceStore` with an atomic `spend(key, ttlMs)` (e.g. Redis
+   *   `SET NX PX`; `InMemoryNonceStore` for single-process dev). Enabling it without
+   *   both throws at construction rather than fail open. Issue challenges with
+   *   `verifier.issueChallenge()`. `challengeTtlMs` (default 5 min) is the nonce
+   *   lifetime. **8een is not replay-safe unless this is on.**
    * @returns {Promise<Verifier>}
    */
   static async start(opts) {
@@ -88,6 +156,10 @@ export class Verifier {
     return new Verifier(service, `age_over_${threshold}`, {
       requireCurrentValidity: opts?.requireCurrentValidity,
       toleranceMs: opts?.toleranceMs,
+      requireSingleUse: opts?.requireSingleUse,
+      challengeSecret: opts?.challengeSecret,
+      nonceStore: opts?.nonceStore,
+      challengeTtlMs: opts?.challengeTtlMs,
     });
   }
 
@@ -111,11 +183,41 @@ export class Verifier {
    * @returns {Promise<import('./types.js').Verdict>}
    */
   async check(proof) {
-    return classify(await this.#service.verify(proof), {
+    const now = Date.now();
+    const verdict = classify(await this.#service.verify(proof), {
       requiredClaim: this.#requiredClaim,
       requireCurrentValidity: this.#requireCurrentValidity,
       toleranceMs: this.#toleranceMs,
-      now: Date.now(),
+      now,
+    });
+    // Single-use is layered AFTER the stateless verdict, and only downgrades an
+    // accept: a replayed or unrecognized session becomes `ok:false` (never a "no").
+    // It reads the nonce from the transcript the proof was actually bound to.
+    if (this.#requireSingleUse) {
+      // Both are guaranteed set by the constructor whenever requireSingleUse is on.
+      return applySingleUse(verdict, proof?.transcript, {
+        secret: /** @type {Buffer|Uint8Array|string} */ (this.#challengeSecret),
+        store: /** @type {import('./types.js').NonceStore} */ (this.#nonceStore),
+        now,
+      });
+    }
+    return verdict;
+  }
+
+  /**
+   * Mint a single-use challenge for one visit, bound to this verifier's secret and
+   * TTL. Send `transcript` to the wallet; on the way back, `check()` spends it.
+   * Only available when the verifier was started with `requireSingleUse`.
+   *
+   * @returns {import('./types.js').Challenge}
+   */
+  issueChallenge() {
+    if (!this.#requireSingleUse) {
+      throw new Error('issueChallenge requires the verifier to be started with requireSingleUse');
+    }
+    return issueChallenge({
+      secret: /** @type {Buffer|Uint8Array|string} */ (this.#challengeSecret),
+      ttlMs: this.#challengeTtlMs,
     });
   }
 

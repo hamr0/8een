@@ -30,12 +30,15 @@ func main() {
 		"credential docType to mint under (default: ISO 18013-5 mDL; M3 uses eu.europa.ec.av.1)")
 	ns := flag.String("namespace", namespace,
 		"IssuerSigned namespace to mint under (default: ISO 18013-5; M3 uses eu.europa.ec.av.1)")
+	sn := flag.String("session-nonce", "",
+		"hex-encoded session nonce for the M4 single-use fixture; when set, also emits single-use.json bound to this exact nonce (an 8een-issued challenge nonce)")
 	flag.Parse()
 
 	// Overriding these mints the whole matrix under a different docType. The element
 	// identifier stays age_over_18 — that is the EU AV attribute name too, so no flag.
 	docType = *dt
 	namespace = *ns
+	sessionNonceHex = *sn
 
 	if err := GenFixtures(*circuitDir, *out); err != nil {
 		fmt.Fprintf(os.Stderr, "FATAL: fixture generation failed: %v\n", err)
