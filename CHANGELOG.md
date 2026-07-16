@@ -4,6 +4,24 @@ All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) ·
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-07-16
+
+**Docs-only:** the dossier (M5). No runtime change.
+
+### M5 — the dossier (PASSED, exit amended by PRD D9)
+- **`docs/index.html`** — the refutation page: statute → spec → shipped default → the
+  missing half, plus the project's own retracted claims (Exhibit V) and an honesty ledger
+  of what is measured, cited, and still open (Exhibit VI). Zero JavaScript, zero external
+  requests; light/dark; every claim lifted from an existing evidence doc, all 8 external
+  citations and 9 internal links verified. Published via GitHub Pages from `/docs`.
+- **`docs/assets/replay-demo.webm`** — the demo recorded unedited at `a023174` (v0.4.0):
+  a real proof accepted (HTTP 200), its byte-identical replay refused
+  (`503 replay_detected`, `over_threshold:null`), a fresh session accepted again.
+- **PRD D9:** the M5 exit criterion "live demo embedded" amended to a GitHub-hosted page
+  with the recorded demo — no VPS, no public endpoint. Consequence stated on the page
+  itself: the on-phone `ZkSystemId` gap (M3) remains open.
+- README: status badge brought current; the dossier linked from §Why.
+
 ## [0.4.0] — 2026-07-16
 
 **Runtime change:** the HTTP gate, M4 piece 3 of 3 — the "adopt without thinking" layer,
