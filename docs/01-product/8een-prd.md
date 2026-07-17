@@ -344,6 +344,7 @@ nonce, or a session we did not issue are the exceptions in the other direction:
 | D7 | **Credential currency is configurable** (`requireCurrentValidity`, default **on**), confirmed 2026-07-15. An expired credential still proves adulthood (age is monotonic), so age-only sites may opt to accept it while KYC-style flows keep the secure default. This amends §7.4b's absolute "expired must not verify" to "must not verify **by default**." The invariant is preserved in both modes; a date that cannot be read is `ok:false`, never a "no". |
 | D8 | **Replay defence is opt-in and delegates its state** (`requireSingleUse`, default **off**), confirmed 2026-07-16. Unlike currency, single-use cannot default on: it needs adopter infrastructure (a shared HMAC secret, a shared spent-nonce store, and issuing challenges) it cannot invent, so a default-on would be *broken* by default. It fails **closed when on** — enabling it without a `challengeSecret` **and** a `nonceStore` throws at construction; 8een never falls back to a per-process store that only looks replay-safe. The spent-nonce set is the adopter's (Redis or equivalent), so NO-GO #7 holds — 8een stores nothing. This closes §7.4a's "the gate must issue a per-session nonce and retire it after one use." |
 | D9 | **The dossier ships as a GitHub-hosted page with a recorded demo, not a live instance**, confirmed 2026-07-16. This amends §6 M5's "live demo embedded": the page (GitHub Pages, `docs/index.html`, zero JS / zero external requests) embeds a recorded, unedited run of `demo/` pinned to its commit, beside reproduce-it-yourself instructions — no VPS, no public endpoint. Consequences accepted and written into the page's honesty ledger: the on-phone `ZkSystemId` gap (M3) stays open — with no live endpoint, no stranger's phone can close it — and the "working demo" claim rests on the recording plus the public repo, not a clickable instance. D1's hosted-demo permission stands unused. |
+| D10 | **`zk8een` publishes to npm as bring-your-own-binary**, confirmed 2026-07-17 (owner chose it over holding for prebuilt binaries). This amends §10's "nothing real is published until the binary problem is solved": `0.4.1` ships the verify module, gate, and types with the BYO requirement stated prominently in README §Status and `8een.context.md`. `provision()` covers circuits; the binary build stays the adopter's documented step. Prebuilt platform binaries (or a checksummed postinstall fetch) remain the intended end state. The installed artifact is validated against a locally built binary before the publish is called done. |
 
 ## 10. Naming & publishing
 
@@ -356,10 +357,13 @@ nonce, or a session we did not issue are the exceptions in the other direction:
 - **Publishing:** OIDC trusted publishing via GitHub Actions (`publish.yml`,
   manual `workflow_dispatch`) — no npm token ever. `zk8een@0.0.0` is an inert,
   deprecated placeholder that exists only because npm requires a package to exist
-  before a trusted publisher can be attached to it. **Nothing real is published
-  until the longfellow binary problem is solved** (see NO-GO #9 / M2): `0.1.0`
-  drives a verifier binary it does not ship and cannot verify a single proof. A
-  correct publish pipeline is not clearance to use it.
+  before a trusted publisher can be attached to it. ~~**Nothing real is published
+  until the longfellow binary problem is solved**~~ **Amended by D10 (2026-07-17):
+  published as bring-your-own-binary.** The package states plainly (README §Status,
+  `8een.context.md` §Constraints) that `npm install` alone verifies nothing and the
+  adopter builds the longfellow binary from the documented steps; prebuilt platform
+  binaries remain open work. The original concern stands otherwise: a correct
+  publish pipeline is not clearance to call it turnkey.
 - **License:** Apache-2.0 (matches longfellow-zk).
 - **Repo:** public on GitHub under `hamr0` from day one. **No key material
   ever enters the tree** — AGENT_RULES' "never write keys into the tree" has

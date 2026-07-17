@@ -23,6 +23,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   with the recorded demo — no VPS, no public endpoint. Consequence stated on the page
   itself: the on-phone `ZkSystemId` gap (M3) remains open.
 - README: status badge brought current; the dossier linked from §Why.
+- **Published to npm as bring-your-own-binary** (PRD §9 D10, 2026-07-17): the package
+  states plainly that `npm install zk8een` verifies nothing until the adopter builds the
+  longfellow binary from the documented steps. First real version on the registry.
 
 ## [0.4.0] — 2026-07-16
 
