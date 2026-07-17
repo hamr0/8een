@@ -41,7 +41,7 @@ Every claim above is pinned to a file, a line, and a commit in [`docs/02-evidenc
 
 ## Quick start
 
-There is still nothing worth `npm install`-ing — 8een drives a longfellow verifier binary it does not yet ship, so the published package cannot verify a proof on its own. The name `zk8een` is reserved on npm, but the only version published there is an empty `0.0.0` placeholder. What exists today: the verify module (below) and the HTTP gate that drops in front of it ([further down](#the-gate--replay-safe-by-default)). Zero runtime dependencies, vanilla Node ≥22.
+**Published as bring-your-own-binary** (owner decision, PRD §9 D10): `npm install zk8een` gives you the verify module, the replay-safe HTTP gate ([below](#the-gate--replay-safe-by-default)), and the types — with zero runtime dependencies, vanilla Node ≥22 — and **it verifies nothing until you build the longfellow verifier binary yourself**. The build is documented ([`poc/M0-EVIDENCE.md`, step 1](https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md)); point `binary:` at the result and everything below works as shown (`provision()` fetches the 17 pinned, sha256-verified circuits for you). Prebuilt platform binaries remain open work — until they ship, this package is for adopters willing to compile a C++/Go project once.
 
 ```js
 import { Verifier, provision } from 'zk8een';
