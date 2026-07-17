@@ -13,7 +13,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   missing half, plus the project's own retracted claims (Exhibit V) and an honesty ledger
   of what is measured, cited, and still open (Exhibit VI). Zero JavaScript, zero external
   requests; light/dark; every claim lifted from an existing evidence doc, all 8 external
-  citations and 9 internal links verified. Published via GitHub Pages from `/docs`.
+  citations and 9 internal links verified. Served via GitHub Pages from `/docs` — enabling
+  Pages is a repo-settings step at merge time, verified live before this claim is trusted
+  ([evidence](docs/02-evidence/M5-EVIDENCE.md)).
 - **`docs/assets/replay-demo.webm`** — the demo recorded unedited at `a023174` (v0.4.0):
   a real proof accepted (HTTP 200), its byte-identical replay refused
   (`503 replay_detected`, `over_threshold:null`), a fresh session accepted again.

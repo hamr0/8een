@@ -12,7 +12,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
-  <img src="https://img.shields.io/badge/status-M4%20passed%20·%20M5%20dossier-2a8c4f" alt="status: M4 passed, M5 dossier">
+  <img src="https://img.shields.io/badge/status-M5%20passed%20·%20v0.4.1-2a8c4f" alt="status: M5 passed, v0.4.1">
   <a href="https://github.com/hamr0/8een/actions/workflows/ci.yml"><img src="https://github.com/hamr0/8een/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <!-- No npm version badge: the only thing on the registry is an inert 0.0.0
        placeholder holding the name. A version badge would advertise it as a
@@ -124,8 +124,8 @@ Since **M2** the integration suite mints its own credentials at run time via `to
 | **M1** | `verify` module: pure verdict, never-throw `{ok, over_threshold, reason}`, full negative matrix | **PASSED** — [evidence](docs/02-evidence/M1-EVIDENCE.md) |
 | **M2** | Full local loop: test-CA (keys generated at runtime, never in the tree), offline fixtures | **PASSED** — [evidence](docs/02-evidence/M2-EVIDENCE.md) |
 | **M3** | Interop with the EU AV app's demo-build proofs | **PASSED** — [evidence](docs/02-evidence/M3-EVIDENCE.md) (via the PRD §6 fallback: the EU's own longfellow prover; on-phone capture pending — emulator unusable on this kernel) |
-| **M4** | HTTP gate + drop-in middleware + demo site. Owns freshness, both halves: per-session single-use nonce, **and** credential expiry (an expired credential must not verify — see PRD §7.4) | planned |
-| **M5** | The dossier: statute → spec → shipped default → working demo | planned |
+| **M4** | HTTP gate + drop-in middleware + demo site. Owns freshness, both halves: per-session single-use nonce, **and** credential expiry (an expired credential must not verify — see PRD §7.4) | **PASSED** — [evidence](docs/02-evidence/M4-EVIDENCE.md) |
+| **M5** | The dossier: statute → spec → shipped default → working demo (recorded, per PRD D9) | **PASSED** — [evidence](docs/02-evidence/M5-EVIDENCE.md) |
 
 ### The components (from the PRD)
 

@@ -225,8 +225,8 @@
   <p class="who">
     This page is the argument, written down with citations. Every claim is either
     <span class="stamp green">measured</span> by code in the open repository or
-    <span class="stamp amber">cited</span> to a primary source, pinned to a file, a line,
-    and a commit. The page says which is which.
+    <span class="stamp amber">cited</span> to a primary source; the file, line, and commit
+    pins live in the evidence log each claim links to. The page says which is which.
   </p>
 
   <div class="thesis">
@@ -265,9 +265,10 @@
 
   <p>
     The load-bearing words are in (a): it names the <strong>attestation provider — the issuer —</strong>
-    as a party that must not be able to link transactions, unconditionally. Keep that in view through
-    Exhibit II: the shipped privacy mechanism defends against colluding websites; it does not defend
-    against the issuer. The spec’s own annex says ZKP is what does.
+    as a party that must not be able to obtain data that links transactions. Keep that in view through
+    Exhibit II: the shipped privacy mechanism defends against colluding websites; against the issuer,
+    the spec’s only safeguard is a storage policy — and the one mechanism the spec itself credits with
+    <em>ensuring</em> unlinkability is the zero-knowledge proof.
   </p>
   <p class="quiet">
     Scope, stated precisely: Art. 5a governs the EUDI Wallet. The age-verification app is a separate,
@@ -304,16 +305,17 @@
   </p>
   <p>What remains true, and is the real gap:</p>
   <ol class="findings">
-    <li>It is a <b>finite anonymity budget</b> — roughly 30 presentations, re-identification to the
-      issuer at least every 3 months (§3.4.2–3.4.3).</li>
+    <li>It is a <b>finite anonymity budget</b> — roughly 30 presentations, re-identification at least
+      every 3 months (§3.4.2–3.4.3).</li>
     <li>It <b>does not protect against the issuer</b>, the party Art. 5a(16)(a) names: an attestation
       provider that retained the batch→user mapping could re-identify every presentation. The spec’s
-      answer is that it <em>“does not require”</em> the provider to store anything (§Data minimisation)
-      — <b>a policy, not a cryptographic guarantee</b>.</li>
-    <li>The spec <b>concedes the point itself</b>. Annex B §B.1: a ZKP-based approach <em>“enhances privacy
-      by ensuring unlinkability, making it computationally infeasible for the Relying Party to associate
-      multiple proofs with the same individual.”</em> And §Unlinkability: <em>“Initially, the solution will
-      rely on batch issuance … Zero-Knowledge Proof (ZKP) mechanisms will be considered.”</em></li>
+      answer is that it <em>“does not require”</em> the provider to store any permanent information
+      (§Data minimisation) — <b>a policy, not a cryptographic guarantee</b>.</li>
+    <li>The spec <b>reserves “ensuring unlinkability” for ZKP alone</b>. Annex B §B.1: a ZKP-based approach
+      <em>“enhances privacy by ensuring unlinkability, making it computationally infeasible for the Relying
+      Party to associate multiple proofs with the same individual.”</em> And §Unlinkability: <em>“Initially,
+      the solution will rely on batch issuance … Zero-Knowledge Proof (ZKP) mechanisms will be
+      considered.”</em> No spec text makes an unlinkability promise about the issuer for any mechanism.</li>
   </ol>
 
   <div class="pin">
@@ -403,10 +405,10 @@
 
   <p>Measured, not asserted <span class="stamp green">measured</span>:</p>
   <ol class="findings">
-    <li>A real <code>age_over_18</code> proof verifies in <b>0.46&nbsp;s</b>; loading the 17 pinned
+    <li>A real <code>age_over_18</code> proof verifies in <b>0.41–0.47&nbsp;s</b>; loading the 17 pinned
       circuits is a <b>44–73&nbsp;s</b> one-time boot cost
       (<a href="https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md">M0</a>,
-      <a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M4-EVIDENCE.md">M4</a>).</li>
+      <a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M1-EVIDENCE.md">M1</a>).</li>
     <li>Tampered proof bytes, a tampered session transcript, a stale certificate chain, an untrusted
       issuer, an underage credential — <b>each refused, each attributed to its layer</b>, in a negative
       matrix minted fresh at test time under a runtime-generated CA
@@ -434,7 +436,9 @@
     spent-nonce memory firing, not a broken proof.
   </p>
   <figure class="demo">
-    <video controls preload="metadata" src="assets/replay-demo.webm" poster="assets/replay-demo-poster.jpg"></video>
+    <!-- Re-recordings overwrite this same path; the commit/date in the caption below MUST be
+         updated in the same commit, or the dossier misstates its own demo's provenance. -->
+    <video controls playsinline preload="none" width="880" height="740" src="assets/replay-demo.webm" poster="assets/replay-demo-poster.jpg"></video>
     <figcaption>
       Recorded unedited, 2026-07-16, from <code>demo/server.js</code> at commit
       <a href="https://github.com/hamr0/8een/commit/a023174"><code>a023174</code></a> (v0.4.0) — real
@@ -458,7 +462,7 @@ const gate = await startGate({
 
 const app = express();
 app.use(gate.express());                  // GET /8een/challenge + POST /8een/verify
-app.listen(3000, '127.0.0.1');</code></pre>
+app.listen(3000, '127.0.0.1');            // loopback; never 0.0.0.0 unless deliberately public</code></pre>
   <p class="quiet">
     <code>ok:true</code> → HTTP 200, branch on <code>over_threshold</code>;
     <code>ok:false</code> → HTTP 503, “could not verify — re-challenge”: never a status that reads as
@@ -522,7 +526,7 @@ app.listen(3000, '127.0.0.1');</code></pre>
     <tr><th>Status</th><th>Claim</th><th>Where the evidence lives</th></tr>
     <tr>
       <td><span class="stamp green">measured</span></td>
-      <td>Verification discriminates: valid accepted (0.46 s), tampered/stale/untrusted/underage each refused at its own layer.</td>
+      <td>Verification discriminates: valid accepted (0.41–0.47 s), tampered/stale/untrusted/underage each refused at its own layer.</td>
       <td><a href="https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md">M0</a>, <a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M2-EVIDENCE.md">M2</a></td>
     </tr>
     <tr>
@@ -542,7 +546,7 @@ app.listen(3000, '127.0.0.1');</code></pre>
     </tr>
     <tr>
       <td><span class="stamp amber">cited</span></td>
-      <td>Full cryptographic unlinkability of the scheme — rests on longfellow’s IETF draft and its independent security review, not on our probe.</td>
+      <td>Full cryptographic unlinkability of the scheme — rests on longfellow’s IETF draft and the independent security review it is under, not on our probe.</td>
       <td><a href="https://datatracker.ietf.org/doc/draft-google-cfrg-libzk/">draft-google-cfrg-libzk</a></td>
     </tr>
     <tr>
@@ -552,8 +556,8 @@ app.listen(3000, '127.0.0.1');</code></pre>
     </tr>
     <tr>
       <td><span class="stamp red">open</span></td>
-      <td>The demo’s wallet is a stub — pre-minted real proofs under a runtime test CA. Real issuance (plastic ID → wallet credential) exists in production nowhere in the EU yet; the whole ecosystem, including the EU’s own demo, runs on test issuance.</td>
-      <td><a href="https://github.com/hamr0/8een/blob/main/demo/server.js">demo/server.js</a></td>
+      <td>The demo’s wallet is a stub — pre-minted real proofs under a runtime test CA; a real proof can only come from a wallet holding the credential’s own device key. Whether any Member State production build or real-user issuance exists is not answerable from the public repos — we claim neither direction.</td>
+      <td><a href="https://github.com/hamr0/8een/blob/main/demo/server.js">demo/server.js</a>, <a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/EU-STACK-AUDIT.md">audit</a></td>
     </tr>
     <tr>
       <td><span class="stamp red">open</span></td>
@@ -577,8 +581,8 @@ app.listen(3000, '127.0.0.1');</code></pre>
 </section>
 
 <footer>
-  <b>This page makes zero network requests</b> — no fonts, no analytics, no scripts. What you just read
-  is the whole transaction.<br>
+  <b>This page loads nothing from anyone else</b> — no fonts, no analytics, no scripts, zero external
+  requests; every byte, including the demo recording, comes from this repository.<br>
   8een · <a href="https://github.com/hamr0/8een">github.com/hamr0/8een</a> · Apache-2.0 · the cryptography
   is <a href="https://github.com/google/longfellow-zk">google/longfellow-zk</a>, never ours.<br>
   Dossier generated from the repository at the commit recorded in
