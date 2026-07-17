@@ -232,8 +232,13 @@ Three corrections to how 8een cited this:
 
 **The load-bearing sentence:** 5a(16)(a) names the **attestation provider** — the issuer —
 as a party that must not be able to link transactions. Batch issuance defends against
-relying parties. It does not defend against the issuer. The spec's own Annex B says ZKP
-is what does.
+relying parties. It does not defend against the issuer; the spec's only issuer-side
+safeguard is the storage policy in §Data minimisation, and the only mechanism the spec
+credits with *ensuring* unlinkability is ZKP (Annex B — whose own wording is
+Relying-Party-scoped; no spec text promises issuer-unlinkability for any mechanism).
+*(Corrected 2026-07-17: this sentence previously ended "The spec's own Annex B says ZKP is
+what does [defend against the issuer]" — attributing to Annex B a claim its RP-scoped
+wording does not make. Found by the M5 dossier review.)*
 
 ## 9. The thesis that survives
 
@@ -248,7 +253,9 @@ The evidenced argument is narrower and holds:
    features" (§6); the `SHALL` path shows the relying party the actual credential.
 3. **When ZK fails, the wallet discloses everything anyway** — silently, by default (§3).
 4. **The law names the issuer as the adversary** (§8); batch issuance does not defend
-   against the issuer (§7); the spec's own Annex B says ZKP is what does (§7).
+   against the issuer (§7); and the only mechanism the spec credits with ensuring
+   unlinkability is ZKP (§7 — Annex B's own promise is RP-scoped; nothing in the spec
+   promises unlinkability against the issuer for any mechanism).
 5. **The one server-side ZK verifier is a vendored wallet SDK** (§5), not a component a
    mid-size site drops into a request path.
 

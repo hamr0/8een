@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="8een — the verifier the EU didn't ship. A dossier: the statute demands unlinkability, the spec concedes ZK ensures it, the shipped default discloses everything, and the missing half is a working, stateless, one-bit verifier.">
+<title>8een — the verifier the EU didn’t ship</title>
+<style>
+  /* ————————————————————————————————————————————————
+     THE CASE FILE. Paper, ink, one stamp of red.
+     Zero JavaScript. Zero external requests — a privacy
+     dossier that phones home refutes itself.
+     ———————————————————————————————————————————————— */
+  :root {
+    --paper: #f6f2e9;
+    --paper-2: #efe9dc;
+    --ink: #211d17;
+    --muted: #6d6355;
+    --rule: #d4cbba;
+    --stamp: #a32b1d;       /* retractions, refusals */
+    --seal: #2e6b3f;        /* verified, measured */
+    --hold: #8a6d1f;        /* cannot-verify, caveats */
+    --mono-bg: #ece5d5;
+    --serif: 'Charter', 'Bitstream Charter', 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+    --mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #171410;
+      --paper-2: #1e1a14;
+      --ink: #e7dfd0;
+      --muted: #9c9181;
+      --rule: #3a342a;
+      --stamp: #d8564a;
+      --seal: #6fae7f;
+      --hold: #c9a84c;
+      --mono-bg: #211d16;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    /* faint laid-paper grain, pure CSS */
+    background-image:
+      repeating-linear-gradient(0deg, transparent 0 2px, rgba(125,105,70,.022) 2px 3px),
+      radial-gradient(ellipse 120% 60% at 50% -10%, rgba(125,105,70,.07), transparent 60%);
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    line-height: 1.62;
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 46rem; margin: 0 auto; padding: 0 1.25rem 5rem; }
+
+  /* — classification bar — */
+  .bar {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--muted);
+    border-bottom: 1px solid var(--rule);
+    padding: .55rem 1.25rem; display: flex; gap: 1.2em; flex-wrap: wrap;
+    justify-content: center;
+  }
+  .bar b { color: var(--ink); font-weight: 600; }
+
+  /* — hero — */
+  header.hero { padding: 4.5rem 0 2.5rem; border-bottom: 3px double var(--rule); }
+  .kicker {
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .22em;
+    text-transform: uppercase; color: var(--stamp); margin: 0 0 1.4rem;
+  }
+  h1 {
+    font-size: clamp(2.4rem, 7vw, 3.9rem); line-height: 1.04;
+    font-weight: 700; letter-spacing: -.015em; margin: 0 0 1.2rem;
+    text-wrap: balance;
+  }
+  .hero p.lede { font-size: 1.16rem; color: var(--ink); max-width: 40rem; margin: 0 0 1rem; }
+  .hero p.who { font-size: .95rem; color: var(--muted); margin: 0; }
+  .hero a { color: inherit; }
+
+  /* — thesis card — */
+  .thesis {
+    margin: 2.6rem 0 0; padding: 1.4rem 1.5rem;
+    border: 1px solid var(--rule); border-left: 4px solid var(--stamp);
+    background: var(--paper-2); font-size: 1.02rem;
+  }
+  .thesis .lbl {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .18em;
+    text-transform: uppercase; color: var(--stamp); display: block; margin-bottom: .6rem;
+  }
+
+  /* — exhibits — */
+  section { padding: 3.2rem 0 0; }
+  .exh {
+    display: flex; align-items: baseline; gap: .9rem;
+    border-bottom: 1px solid var(--rule); padding-bottom: .55rem; margin-bottom: 1.5rem;
+  }
+  .exh .num {
+    font-family: var(--mono); font-size: .72rem; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--muted); white-space: nowrap;
+  }
+  .exh h2 { font-size: 1.55rem; margin: 0; line-height: 1.15; letter-spacing: -.01em; }
+  h3 { font-size: 1.06rem; margin: 1.8rem 0 .5rem; }
+  p { margin: .85rem 0; }
+  .quiet { color: var(--muted); font-size: .93rem; }
+
+  /* — verbatim quote block — */
+  blockquote.law {
+    margin: 1.4rem 0; padding: 1.15rem 1.35rem;
+    border: 1px solid var(--rule); background: var(--paper-2);
+    font-size: .98rem;
+  }
+  blockquote.law p { margin: .5rem 0; }
+  blockquote.law .src {
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--muted); margin-top: .8rem; display: block;
+  }
+
+  /* — verdict stamps — */
+  .stamp {
+    display: inline-block; font-family: var(--mono); font-size: .66rem;
+    letter-spacing: .18em; text-transform: uppercase; font-weight: 700;
+    padding: .18em .6em; border: 1.5px solid currentColor; border-radius: 2px;
+    transform: rotate(-1.2deg); vertical-align: middle;
+  }
+  .stamp.red { color: var(--stamp); }
+  .stamp.green { color: var(--seal); }
+  .stamp.amber { color: var(--hold); }
+
+  /* — findings list — */
+  ol.findings { padding-left: 1.3rem; margin: 1.2rem 0; }
+  ol.findings > li { margin: 1.05rem 0; }
+  ol.findings b { font-weight: 700; }
+
+  /* — pinned source cards — */
+  .pin {
+    font-family: var(--mono); font-size: .74rem; line-height: 1.6;
+    color: var(--muted); border-top: 1px dashed var(--rule);
+    margin-top: 1.6rem; padding-top: .7rem;
+    overflow-x: auto;
+  }
+  .pin .lbl { letter-spacing: .16em; text-transform: uppercase; font-size: .64rem; }
+  .pin a { color: var(--muted); }
+  code {
+    font-family: var(--mono); font-size: .84em;
+    background: var(--mono-bg); padding: .08em .35em; border-radius: 3px;
+    overflow-wrap: anywhere; /* long tokens (FallbackToFullDisclosure) must break, not clip, on phones */
+  }
+  pre {
+    font-family: var(--mono); font-size: .8rem; line-height: 1.55;
+    background: var(--mono-bg); border: 1px solid var(--rule);
+    padding: 1rem 1.1rem; border-radius: 4px; overflow-x: auto; margin: 1.2rem 0;
+  }
+  pre code { background: none; padding: 0; }
+  a { color: inherit; text-decoration-color: var(--rule); text-underline-offset: 2px; }
+  a:hover { text-decoration-color: var(--stamp); }
+
+  /* — the demo figure — */
+  figure.demo { margin: 1.6rem 0; }
+  figure.demo video {
+    width: 100%; border: 1px solid var(--rule); border-radius: 4px; display: block;
+    background: #0e1116;
+  }
+  figure.demo figcaption {
+    font-family: var(--mono); font-size: .72rem; color: var(--muted);
+    margin-top: .6rem; line-height: 1.6;
+  }
+
+  /* — ledger table — */
+  .ledger-wrap { overflow-x: auto; margin: 1.2rem 0; }
+  table.ledger {
+    border-collapse: collapse; width: 100%; font-size: .88rem; min-width: 34rem;
+  }
+  table.ledger th, table.ledger td {
+    text-align: left; padding: .55rem .7rem; border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  table.ledger th {
+    font-family: var(--mono); font-size: .66rem; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--muted); font-weight: 600;
+  }
+  table.ledger td:first-child { white-space: nowrap; font-family: var(--mono); font-size: .78rem; }
+
+  /* — corrections — */
+  .correction {
+    border: 1px solid var(--rule); border-left: 4px solid var(--stamp);
+    background: var(--paper-2); padding: 1rem 1.2rem; margin: 1rem 0; font-size: .95rem;
+  }
+  .correction .was {
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--stamp); display: block; margin-bottom: .4rem;
+  }
+
+  footer {
+    margin-top: 4.5rem; border-top: 3px double var(--rule); padding-top: 1.4rem;
+    font-family: var(--mono); font-size: .74rem; color: var(--muted); line-height: 1.8;
+  }
+  footer b { color: var(--ink); }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <span><b>DOSSIER</b></span>
+  <span>zk8een</span>
+  <span>Apache-2.0</span>
+  <span>built in the open</span>
+  <span><a href="https://github.com/hamr0/8een">github.com/hamr0/8een</a></span>
+</div>
+
+<main>
+
+<header class="hero">
+  <p class="kicker">Age verification · zero-knowledge · the missing half</p>
+  <h1>Over&nbsp;18 is one&nbsp;bit.<br>Here is the verifier the EU didn’t&nbsp;ship.</h1>
+  <p class="lede">
+    <strong>8een</strong> is a small, open, stateless component that checks a zero-knowledge
+    age proof and answers exactly one bit — over the threshold, or not — while learning
+    nothing else. No name, no birthdate, no document, no identifier crosses the boundary.
+    The cryptography is <a href="https://github.com/google/longfellow-zk">google/longfellow-zk</a>
+    (IETF <a href="https://datatracker.ietf.org/doc/draft-google-cfrg-libzk/">draft-google-cfrg-libzk</a>)
+    — the same library the EU’s own age-verification app carries in every build. 8een authors zero cryptography.
+  </p>
+  <p class="who">
+    This page is the argument, written down with citations. Every claim is either
+    <span class="stamp green">measured</span> by code in the open repository or
+    <span class="stamp amber">cited</span> to a primary source; the file, line, and commit
+    pins live in the evidence log each claim links to. The page says which is which.
+  </p>
+
+  <div class="thesis">
+    <span class="lbl">The claim under refutation</span>
+    Age-verification mandates are being implemented on the premise that <em>to check a fact
+    about a person you must collect the person</em>. The EU’s own architecture concedes this
+    is false — and then declines to implement the fix. 8een’s case is <strong>not</strong> that
+    ZK verification is impossible: a verifier exists and works. It is that the unlinkable path is
+    not <em>reachable</em> on the protocol the web actually uses, not <em>default</em> anywhere,
+    not <em>fail-safe</em> when it breaks, and not <em>adoptable</em> as a small stateless
+    dependency — and the party the statute names as the adversary is the one the shipped
+    default does not defend against.
+  </div>
+</header>
+
+<!-- ======================= EXHIBIT I ======================= -->
+<section id="statute">
+  <div class="exh">
+    <span class="num">Exhibit I</span>
+    <h2>The statute demands unlinkability — and names the issuer as the adversary</h2>
+  </div>
+
+  <p>eIDAS 2.0 — Regulation (EU) 2024/1183, Article 5a(16) — verbatim from the Official Journal:</p>
+
+  <blockquote class="law">
+    <p><strong>16.</strong> The technical framework of the European Digital Identity Wallet shall:</p>
+    <p><strong>(a)</strong> not allow providers of electronic attestations of attributes <strong>or any
+    other party</strong>, after the issuance of the attestation of attributes, to obtain data that allows
+    transactions or user behaviour to be <strong>tracked, linked or correlated</strong>, or knowledge of
+    transactions or user behaviour to be otherwise obtained, unless explicitly authorised by the user;</p>
+    <p><strong>(b)</strong> enable privacy preserving techniques which ensure <strong>unlikeability</strong>
+    <em>[sic — the typo is in the published Official Journal; the intended word is “unlinkability”]</em>, where the attestation of attributes
+    does not require the identification of the user.</p>
+    <span class="src">Regulation (EU) 2024/1183, Art. 5a(16) — <a href="https://eur-lex.europa.eu/eli/reg/2024/1183/oj">EUR-Lex, Official Journal</a></span>
+  </blockquote>
+
+  <p>
+    The load-bearing words are in (a): it names the <strong>attestation provider — the issuer —</strong>
+    as a party that must not be able to obtain data that links transactions. Keep that in view through
+    Exhibit II: the shipped privacy mechanism defends against colluding websites; against the issuer,
+    the spec’s only safeguard is a storage policy — and the one mechanism the spec itself credits with
+    <em>ensuring</em> unlinkability is the zero-knowledge proof.
+  </p>
+  <p class="quiet">
+    Scope, stated precisely: Art. 5a governs the EUDI Wallet. The age-verification app is a separate,
+    blueprint-derived mini-wallet — it <em>inherits the design constraint</em> of 5a(16) rather than being
+    directly bound by it. And (b) is the weaker limb — a duty to <em>“enable”</em> techniques. The argument
+    here leans on (a), which is outcome-shaped.
+  </p>
+</section>
+
+<!-- ======================= EXHIBIT II ======================= -->
+<section id="spec">
+  <div class="exh">
+    <span class="num">Exhibit II</span>
+    <h2>The spec concedes ZK is the fix — then files it under “Experimental”</h2>
+  </div>
+
+  <p>
+    The EU age-verification technical specification (release 1.0.9) binds itself to RFC 2119, so its
+    verbs are load-bearing. An AV app <strong>SHALL</strong> implement the plain presentation protocols
+    (§4.2) and <strong>SHOULD</strong> — RECOMMENDED, not optional — implement the ZKP mechanism; a relying
+    party <strong>SHOULD</strong> implement ZKP verification (§4.4). The ZKP mechanism itself sits in the
+    chapter titled <strong>“Experimental features”</strong>: <em>“a next version … will include as an
+    experimental feature the Zero-Knowledge Proof (ZKP) solution”</em> (§7.1). The mandatory path is plain
+    mdoc — where the relying party sees the actual credential.
+  </p>
+
+  <h3>The shipped privacy mechanism, treated fairly</h3>
+  <p>
+    The spec’s answer to linkability is batch issuance: ~30 single-use attestations (a recommendation,
+    §3.4.1), each bound to a distinct device key. Against <strong>colluding relying parties this is
+    genuinely unlinkable</strong> — two websites comparing notes see two different signatures over two
+    different keys, and there is no credential-borne correlator. An earlier version of this argument
+    called that “linkable”; it was wrong, and the correction is recorded in Exhibit V.
+  </p>
+  <p>What remains true, and is the real gap:</p>
+  <ol class="findings">
+    <li>It is a <b>finite anonymity budget</b> — roughly 30 presentations, re-identification at least
+      every 3 months (§3.4.2–3.4.3).</li>
+    <li>It <b>does not protect against the issuer</b>, the party Art. 5a(16)(a) names: an attestation
+      provider that retained the batch→user mapping could re-identify every presentation. The spec’s
+      answer is that it <em>“does not require”</em> the provider to store any permanent information
+      (§Data minimisation) — <b>a policy, not a cryptographic guarantee</b>.</li>
+    <li>The spec <b>reserves “ensuring unlinkability” for ZKP alone</b>. Annex B §B.1: a ZKP-based approach
+      <em>“enhances privacy by ensuring unlinkability, making it computationally infeasible for the Relying
+      Party to associate multiple proofs with the same individual.”</em> And §Unlinkability: <em>“Initially,
+      the solution will rely on batch issuance … Zero-Knowledge Proof (ZKP) mechanisms will be
+      considered.”</em> No spec text makes an unlinkability promise about the issuer for any mechanism.</li>
+  </ol>
+
+  <div class="pin">
+    <span class="lbl">Source, pinned</span><br>
+    <a href="https://github.com/eu-digital-identity-wallet/av-doc-technical-specification">eu-digital-identity-wallet/av-doc-technical-specification</a> @ 5eb8a03 (release 1.0.9, 2026-03-19) · §1.4 (RFC 2119), §3.4, §4.2, §4.4, §7.1, Annex B §B.1 ·
+    full audit: <a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/EU-STACK-AUDIT.md">EU-STACK-AUDIT.md</a>
+  </div>
+</section>
+
+<!-- ======================= EXHIBIT III ======================= -->
+<section id="shipped">
+  <div class="exh">
+    <span class="num">Exhibit III</span>
+    <h2>What actually ships: full disclosure by default, silently on failure</h2>
+  </div>
+
+  <p>
+    Four findings from an adversarial read of the EU’s own repositories — each handed to an independent
+    check instructed to <em>refute</em> it, each pinned to file, line, and commit. This audit also killed
+    four of 8een’s own prior claims (Exhibit V).
+  </p>
+
+  <ol class="findings">
+    <li>
+      <b>On the protocol a website actually uses, the wallet cannot produce a ZK proof at all.</b>
+      In wallet-core v0.28.1 the OpenID4VP request processor is constructed
+      <b>without the ZK machinery</b> (<code>DcqlRequestProcessor</code> takes no
+      <code>zkSystemRepository</code>); only the browser Digital-Credentials-API and proximity paths
+      receive it. ZK is carried in <em>every</em> build of the AV app — and is unreachable from the
+      mainstream web protocol.
+    </li>
+    <li>
+      <b>The flagship verifier cannot check one.</b> The EU’s OpenID4VP verifier endpoint contains
+      <b>no ZK support of any kind</b>: no ZK dependency, a closed format dispatch
+      (<code>{SdJwtVc, MsoMdoc, else → throw}</code>), and zero ZK-related commits in its entire
+      history. This survived a deliberate attempt to break it.
+    </li>
+    <li>
+      <b>When proof generation fails, the wallet silently discloses the entire document.</b>
+      The default policy is <code>ZkResponsePolicy.FallbackToFullDisclosure</code>; on any ZK failure
+      the full mdoc is sent instead. The library’s own documentation calls the safe setting
+      (<code>Strict</code>) <em>“recommended for production use to prevent unintended full document
+      disclosure”</em> — and neither the AV app nor wallet-core ever sets it. A security mechanism
+      that fails by disclosing everything, silently, is the exact failure shape this project exists
+      to refuse.
+    </li>
+    <li>
+      <b>The one server-side ZK verifier that exists is a vendored wallet SDK, not a drop-in.</b>
+      It is real, deployed, and it works — a vendored copy of OpenWallet’s Multipaz, to which the EU
+      authored ~370 lines (trust anchors, a doctype, CORS); none of the cryptography. A mid-size site
+      cannot drop a wallet SDK into a request path. <em>That adoptable, stateless verifier is the
+      missing half — Exhibit IV.</em>
+    </li>
+  </ol>
+
+  <div class="pin">
+    <span class="lbl">Sources, pinned</span><br>
+    <a href="https://github.com/eu-digital-identity-wallet/av-app-android-wallet-ui">av-app-android-wallet-ui</a> @ f8fde51 ·
+    <a href="https://github.com/eu-digital-identity-wallet/eudi-lib-android-wallet-core">eudi-lib-android-wallet-core</a> v0.28.1 ·
+    eudi-lib-android-iso18013-data-transfer v0.14.0 ·
+    <a href="https://github.com/eu-digital-identity-wallet/eudi-srv-web-verifier-endpoint-23220-4-kt">eudi-srv-web-verifier-endpoint-23220-4-kt</a> @ de66a3e ·
+    <a href="https://github.com/eu-digital-identity-wallet/av-dc-api-backend">av-dc-api-backend</a> @ 2418006 ·
+    file/line pins for every claim: <a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/EU-STACK-AUDIT.md">EU-STACK-AUDIT.md</a>
+  </div>
+</section>
+
+<!-- ======================= EXHIBIT IV ======================= -->
+<section id="verifier">
+  <div class="exh">
+    <span class="num">Exhibit IV</span>
+    <h2>The missing half, working</h2>
+  </div>
+
+  <p>
+    8een is the adoptable verifier: vanilla Node, <strong>zero runtime dependencies</strong>, stateless
+    by design — it stores nothing, so there is nothing to breach. It drives the longfellow verifier and
+    returns one bit behind one invariant:
+  </p>
+  <blockquote class="law">
+    <p><em>“Did we get an answer”</em> (<code>ok</code>) is separate from <em>“what the answer was”</em>
+    (<code>over_threshold</code>), and a verifier that cannot verify says
+    <strong>“I cannot verify”</strong> — never <strong>“you are underage.”</strong> A broken verifier
+    reporting “no” would turn away every legitimate adult while sounding exactly like a working one —
+    the same failure shape as Exhibit III.3, refused by construction.</p>
+    <span class="src">Enforced across the test suite — <a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M1-EVIDENCE.md">M1-EVIDENCE.md</a></span>
+  </blockquote>
+
+  <p>Measured, not asserted <span class="stamp green">measured</span>:</p>
+  <ol class="findings">
+    <li>A real <code>age_over_18</code> proof verifies in <b>0.41–0.47&nbsp;s</b>; loading the 17 pinned
+      circuits is a <b>44–73&nbsp;s</b> one-time boot cost
+      (<a href="https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md">M0</a>,
+      <a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M1-EVIDENCE.md">M1</a>).</li>
+    <li>Tampered proof bytes, a tampered session transcript, a stale certificate chain, an untrusted
+      issuer, an underage credential — <b>each refused, each attributed to its layer</b>, in a negative
+      matrix minted fresh at test time under a runtime-generated CA
+      (<a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M2-EVIDENCE.md">M2</a>).</li>
+    <li><b>EU interop is byte-real:</b> the EU stack’s 12 circuits are sha256-identical to 8een’s pinned
+      set, and 8een verifies a proof generated by the EU’s own prover — a circuit-labeling divergence was
+      found and bridged, label-resolution only
+      (<a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M3-EVIDENCE.md">M3</a>).</li>
+    <li><b>Unlinkability, probed:</b> two presentations of the same credential share no detectable
+      per-credential identifier down to a measured ~11-byte detection floor — a black-box byte probe with
+      a planted-identifier positive control, watched failing before its null result was believed
+      (<a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M2-EVIDENCE.md">M2</a>).
+      Full cryptographic unlinkability rests on the scheme’s own analysis
+      <span class="stamp amber">cited</span>.</li>
+    <li><b>Replay-safe by default at the adoption layer:</b> the HTTP gate issues a single-use nonce and
+      spends it; a byte-identical replay is refused (<code>replay_detected</code>) as a “cannot verify,”
+      never a “no.” An expired credential is refused by default
+      (<a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M4-EVIDENCE.md">M4</a>).</li>
+  </ol>
+
+  <h3>Watch the property that matters</h3>
+  <p>
+    The recording below is the replay defence, unedited: the same real proof is <strong>accepted once</strong>
+    and <strong>refused on replay</strong> — then a fresh session is accepted again. The refusal is the
+    spent-nonce memory firing, not a broken proof.
+  </p>
+  <figure class="demo">
+    <!-- Re-recordings overwrite this same path; the commit/date in the caption below MUST be
+         updated in the same commit, or the dossier misstates its own demo's provenance. -->
+    <video controls playsinline preload="none" width="880" height="740" src="assets/replay-demo.webm" poster="assets/replay-demo-poster.jpg"></video>
+    <figcaption>
+      Recorded unedited, 2026-07-16, from <code>demo/server.js</code> at commit
+      <a href="https://github.com/hamr0/8een/commit/a023174"><code>a023174</code></a> (v0.4.0) — real
+      longfellow verification, real single-use nonce spend; the only stub is the wallet (pre-minted
+      proofs under a runtime test CA — see the ledger, Exhibit VI). Reproduce it yourself:
+      <code>node demo/server.js</code> after the documented build.
+    </figcaption>
+  </figure>
+
+  <h3>Adopt it</h3>
+  <pre><code>import { startGate } from 'zk8een';
+import express from 'express';
+
+const gate = await startGate({
+  binary: './longfellow-verifier',
+  circuitDir: './circuits',
+  caCerts: './issuers.pem',               // THE trust boundary — choose it deliberately
+  challengeSecret: process.env.EIGHTEEN_SECRET,  // ≥16 bytes, stable, shared across replicas
+  store: 'memory',                        // dev shortcut; Redis-backed nonceStore in production
+});
+
+const app = express();
+app.use(gate.express());                  // GET /8een/challenge + POST /8een/verify
+app.listen(3000, '127.0.0.1');            // loopback; never 0.0.0.0 unless deliberately public</code></pre>
+  <p class="quiet">
+    <code>ok:true</code> → HTTP 200, branch on <code>over_threshold</code>;
+    <code>ok:false</code> → HTTP 503, “could not verify — re-challenge”: never a status that reads as
+    “this person is denied.”
+  </p>
+</section>
+
+<!-- ======================= EXHIBIT V ======================= -->
+<section id="corrections">
+  <div class="exh">
+    <span class="num">Exhibit V</span>
+    <h2>Corrections — claims of ours the evidence killed</h2>
+  </div>
+
+  <p>
+    Each claim in this dossier was handed to an independent check instructed to refute it. Four of the
+    project’s own public claims did not survive, and are retracted here rather than quietly fixed — an
+    argument that cannot show its corrections cannot be trusted with its claims.
+  </p>
+
+  <div class="correction">
+    <span class="was">Retracted <span class="stamp red">false</span></span>
+    “The EU app enables ZK proofs only in the demo build.” — ZK is configured in <b>both</b> shipped
+    flavors. (What no repo can answer: whether any Member State <em>production</em> build exists at all.
+    We claim neither direction.)
+  </div>
+  <div class="correction">
+    <span class="was">Retracted <span class="stamp red">unfair to the EU</span></span>
+    “Batches of 30 single-use credentials = rate-limited linkability.” — Against colluding relying
+    parties, batch issuance is <b>genuinely unlinkable</b>. The real gap is the issuer (Exhibit II).
+  </div>
+  <div class="correction">
+    <span class="was">Retracted <span class="stamp red">false twice over</span></span>
+    “The EU’s ZK verifier is browser-only, behind a Chrome flag, off by default.” — It is a plain HTTP
+    server, reachable from all three transports, live, and the flag is never read; the ZK path enables
+    itself in any DC-API-capable browser.
+  </div>
+  <div class="correction">
+    <span class="was">Corrected <span class="stamp amber">imprecise</span></span>
+    “ZKP is optional in the spec.” — It is <b>SHOULD</b> (RECOMMENDED) under RFC 2119, which the spec
+    binds itself to. “Optional” is the one word a hostile expert could falsify; the accurate sentence —
+    recommended, yet filed under “Experimental features” — is damning enough.
+  </div>
+
+  <div class="pin">
+    <span class="lbl">Full record</span><br>
+    <a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/EU-STACK-AUDIT.md">EU-STACK-AUDIT.md</a> — method, pins, and both retractions of our own unlinkability test design along the way
+    (<a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M2-EVIDENCE.md">M2-EVIDENCE.md</a>).
+  </div>
+</section>
+
+<!-- ======================= EXHIBIT VI ======================= -->
+<section id="ledger">
+  <div class="exh">
+    <span class="num">Exhibit VI</span>
+    <h2>The honesty ledger — what is measured, cited, and still open</h2>
+  </div>
+
+  <div class="ledger-wrap">
+  <table class="ledger">
+    <tr><th>Status</th><th>Claim</th><th>Where the evidence lives</th></tr>
+    <tr>
+      <td><span class="stamp green">measured</span></td>
+      <td>Verification discriminates: valid accepted (0.41–0.47 s), tampered/stale/untrusted/underage each refused at its own layer.</td>
+      <td><a href="https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md">M0</a>, <a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M2-EVIDENCE.md">M2</a></td>
+    </tr>
+    <tr>
+      <td><span class="stamp green">measured</span></td>
+      <td>No per-credential identifier in proof bytes, to a ~11-byte detection floor — an 8-byte or non-contiguous identifier would evade the probe.</td>
+      <td><a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M2-EVIDENCE.md">M2</a></td>
+    </tr>
+    <tr>
+      <td><span class="stamp green">measured</span></td>
+      <td>EU circuit byte-identity (12/12 sha256-equal) and verification of a proof from the EU’s own prover.</td>
+      <td><a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M3-EVIDENCE.md">M3</a></td>
+    </tr>
+    <tr>
+      <td><span class="stamp green">measured</span></td>
+      <td>Expired credential refused by default; byte-identical replay refused with single-use on — and accepted with it off, asserted by a test that exists so nobody forgets the stateless default.</td>
+      <td><a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M4-EVIDENCE.md">M4</a></td>
+    </tr>
+    <tr>
+      <td><span class="stamp amber">cited</span></td>
+      <td>Full cryptographic unlinkability of the scheme — rests on longfellow’s IETF draft and the independent security review it is under, not on our probe.</td>
+      <td><a href="https://datatracker.ietf.org/doc/draft-google-cfrg-libzk/">draft-google-cfrg-libzk</a></td>
+    </tr>
+    <tr>
+      <td><span class="stamp red">open</span></td>
+      <td>No proof from a real phone has ever reached this verifier — M3 was met via the EU’s own server-side prover (the Android emulator is a documented dead end on the build host); the on-phone circuit-id label remains unpinned.</td>
+      <td><a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/M3-EVIDENCE.md">M3</a></td>
+    </tr>
+    <tr>
+      <td><span class="stamp red">open</span></td>
+      <td>The demo’s wallet is a stub — pre-minted real proofs under a runtime test CA; a real proof can only come from a wallet holding the credential’s own device key. Whether any Member State production build or real-user issuance exists is not answerable from the public repos — we claim neither direction.</td>
+      <td><a href="https://github.com/hamr0/8een/blob/main/demo/server.js">demo/server.js</a>, <a href="https://github.com/hamr0/8een/blob/main/docs/02-evidence/EU-STACK-AUDIT.md">audit</a></td>
+    </tr>
+    <tr>
+      <td><span class="stamp red">open</span></td>
+      <td>Not yet on npm: the package drives a ~10.5 MB verifier binary it does not ship; publishing before binary distribution is solved would install a verifier that cannot verify.</td>
+      <td><a href="https://github.com/hamr0/8een/blob/main/README.md">README</a></td>
+    </tr>
+    <tr>
+      <td><span class="stamp amber">out of scope</span></td>
+      <td>Issuance integrity (the enrollment step is the issuer’s; a verifier cannot fix it and pretending otherwise would be dishonest) — stated plainly, by design.</td>
+      <td><a href="https://github.com/hamr0/8een/blob/main/docs/01-product/8een-prd.md">PRD §8</a></td>
+    </tr>
+  </table>
+  </div>
+
+  <p class="quiet">
+    Statelessness is the security argument, not a limitation: 8een keeps no storage, no accounts, no
+    telemetry — the only state anywhere is the adopter’s own spent-nonce set. The recurring bug this
+    project keeps finding — in its own code and in Exhibit III — is a security component that half-loads
+    and answers confidently anyway. Every layer here refuses to serve rather than serve wrongly.
+  </p>
+</section>
+
+<footer>
+  <b>This page loads nothing from anyone else</b> — no fonts, no analytics, no scripts, zero external
+  requests; every byte, including the demo recording, comes from this repository.<br>
+  8een · <a href="https://github.com/hamr0/8een">github.com/hamr0/8een</a> · Apache-2.0 · the cryptography
+  is <a href="https://github.com/google/longfellow-zk">google/longfellow-zk</a>, never ours.<br>
+  Dossier generated from the repository at the commit recorded in
+  <a href="https://github.com/hamr0/8een/commits/main">the history</a>; the demo recording states its
+  commit in its caption.
+</footer>
+
+</main>
+</body>
+</html>

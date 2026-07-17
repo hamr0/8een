@@ -12,7 +12,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
-  <img src="https://img.shields.io/badge/status-M3%20passed%20·%20M4%20next-2a8c4f" alt="status: M3 passed, M4 next">
+  <img src="https://img.shields.io/badge/status-M5%20passed%20·%20v0.4.1-2a8c4f" alt="status: M5 passed, v0.4.1">
   <a href="https://github.com/hamr0/8een/actions/workflows/ci.yml"><img src="https://github.com/hamr0/8een/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <!-- No npm version badge: the only thing on the registry is an inert 0.0.0
        placeholder holding the name. A version badge would advertise it as a
@@ -24,6 +24,8 @@
 Small enough to understand completely, boring enough to run forever. 8een checks a zero-knowledge age proof against an issuer trust list and answers exactly one bit. Proofs are fresh per presentation and mathematically unlinkable — two sites comparing notes see two strangers. There is nothing to breach, subpoena, or sell, because identity never arrives. The cryptography is never ours: proofs are generated and verified by [google/longfellow-zk](https://github.com/google/longfellow-zk) (Apache-2.0, IETF [draft-google-cfrg-libzk](https://datatracker.ietf.org/doc/draft-google-cfrg-libzk/)) — the same scheme the EU age-verification blueprint designates and the EU app already carries in every build. 8een is the missing half: the verifier, the trust-anchor handling, the tests, the drop-in gate, and the documentation that make it adoptable.
 
 ## Why
+
+**The full argument, written down with citations — statute, spec, shipped default, working demo, and the claims of ours the evidence killed: [the dossier](https://hamr0.github.io/8een/).**
 
 eIDAS 2.0 Art. 5a(16)(a) says the framework must not let attestation providers *or any other party* obtain data that allows transactions to be "tracked, linked or correlated." It names the **issuer** as an adversary.
 
@@ -122,8 +124,8 @@ Since **M2** the integration suite mints its own credentials at run time via `to
 | **M1** | `verify` module: pure verdict, never-throw `{ok, over_threshold, reason}`, full negative matrix | **PASSED** — [evidence](docs/02-evidence/M1-EVIDENCE.md) |
 | **M2** | Full local loop: test-CA (keys generated at runtime, never in the tree), offline fixtures | **PASSED** — [evidence](docs/02-evidence/M2-EVIDENCE.md) |
 | **M3** | Interop with the EU AV app's demo-build proofs | **PASSED** — [evidence](docs/02-evidence/M3-EVIDENCE.md) (via the PRD §6 fallback: the EU's own longfellow prover; on-phone capture pending — emulator unusable on this kernel) |
-| **M4** | HTTP gate + drop-in middleware + demo site. Owns freshness, both halves: per-session single-use nonce, **and** credential expiry (an expired credential must not verify — see PRD §7.4) | planned |
-| **M5** | The dossier: statute → spec → shipped default → working demo | planned |
+| **M4** | HTTP gate + drop-in middleware + demo site. Owns freshness, both halves: per-session single-use nonce, **and** credential expiry (an expired credential must not verify — see PRD §7.4) | **PASSED** — [evidence](docs/02-evidence/M4-EVIDENCE.md) |
+| **M5** | The dossier: statute → spec → shipped default → working demo (recorded, per PRD D9) | **PASSED** — [evidence](docs/02-evidence/M5-EVIDENCE.md) |
 
 ### The components (from the PRD)
 
