@@ -360,6 +360,10 @@ verify"*. It never says *"you are underage"*.
   clock-independent or runs on the real clock. M2's test-CA removes the
   scaffolding.
 
+[0.4.1]: https://github.com/hamr0/8een/releases/tag/v0.4.1
+[0.4.0]: https://github.com/hamr0/8een/releases/tag/v0.4.0
+[0.3.0]: https://github.com/hamr0/8een/releases/tag/v0.3.0
+[0.2.0]: https://github.com/hamr0/8een/releases/tag/v0.2.0
 [0.1.3]: https://github.com/hamr0/8een/releases/tag/v0.1.3
 [0.1.2]: https://github.com/hamr0/8een/releases/tag/v0.1.2
 [0.1.1]: https://github.com/hamr0/8een/releases/tag/v0.1.1
