@@ -23,6 +23,7 @@
 import { VerifierService } from './service.js';
 import { classify, REASONS } from './verdict.js';
 import { provision, manifest } from './circuits.js';
+import { provisionBinary, resolveProvisionedBinary, defaultBinaryDir, binaryManifest } from './binary.js';
 import { issueChallenge, inspectChallenge, applySingleUse, InMemoryNonceStore } from './challenge.js';
 
 export {
@@ -31,6 +32,10 @@ export {
   VerifierService,
   provision,
   manifest,
+  provisionBinary,
+  resolveProvisionedBinary,
+  defaultBinaryDir,
+  binaryManifest,
   issueChallenge,
   inspectChallenge,
   applySingleUse,
@@ -115,10 +120,17 @@ export class Verifier {
    * Provision circuits first (see {@link provision}), then start one of these and
    * keep it: the circuit load takes 44-73s, so it is a boot cost, not a per-request one.
    *
-   * @param {import('./types.js').ServiceInit & {threshold?: number,
+   * @param {Omit<import('./types.js').ServiceInit, 'binary'> & {binary?: string,
+   *   threshold?: number,
    *   requireCurrentValidity?: boolean, toleranceMs?: number,
    *   requireSingleUse?: boolean, challengeSecret?: Buffer|Uint8Array|string,
    *   nonceStore?: import('./types.js').NonceStore, challengeTtlMs?: number}} opts
+   *   `binary` may be omitted after {@link provisionBinary}: the prebuilt,
+   *   sha256-pinned verifier is then found in {@link defaultBinaryDir} and
+   *   RE-HASHED against the pin on every start -- a binary that no longer
+   *   matches is refused, never run (see `binary.js`). Pass `binary:` to use
+   *   your own build instead; the pin does not apply to a path you chose.
+   *
    *   `caCerts` IS THE TRUST BOUNDARY: a proof is accepted only if its issuer chains
    *   to one of those roots. Choose it deliberately -- it is the whole security
    *   decision. `vicalUrl` opts in to a network-fetched issuer trust list (ISO
@@ -155,7 +167,12 @@ export class Verifier {
     if (!Number.isInteger(threshold) || threshold < 1) {
       throw new TypeError(`threshold must be a positive integer, got ${opts?.threshold}`);
     }
-    const service = new VerifierService(opts);
+    // No `binary:`? Use the provisioned prebuilt -- which resolveProvisionedBinary
+    // re-hashes against the manifest pin right now, at the last moment anyone can.
+    // It throws (with the fix in the message) if nothing intact is there; we never
+    // guess our way to some other executable.
+    const binary = opts?.binary ?? (await resolveProvisionedBinary());
+    const service = new VerifierService({ ...opts, binary });
     await service.start();
     return new Verifier(service, `age_over_${threshold}`, {
       requireCurrentValidity: opts?.requireCurrentValidity,

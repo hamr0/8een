@@ -1,0 +1,17 @@
+{
+  "upstream": "https://github.com/google/longfellow-zk",
+  "commit": "d8ad8f65187c7c364a3c2181ad484bcab03f0ec2",
+  "patches": [
+    "0001-zkverify-fake-time.patch",
+    "0002-eu-circuit-id-compat.patch",
+    "0003-m4-echo-verified-timestamp.patch"
+  ],
+  "release": "longfellow-bin-1",
+  "binaries": {
+    "linux-x64": {
+      "asset": "longfellow-verifier-linux-x64",
+      "sha256": "PENDING-PINNED-FROM-RELEASE-RUN",
+      "bytes": 0
+    }
+  }
+}

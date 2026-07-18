@@ -37,7 +37,7 @@
     "typecheck": "tsc --noEmit",
     "build:types": "tsc",
     "prepublishOnly": "npm run build:types",
-    "test": "node --test test/verdict.test.js test/challenge.test.js test/circuits.test.js test/service.test.js test/gate.test.js",
+    "test": "node --test test/verdict.test.js test/challenge.test.js test/circuits.test.js test/binary.test.js test/service.test.js test/gate.test.js",
     "test:integration": "node --test --test-timeout 900000 test/integration.test.js",
     "test:all": "npm run test && npm run test:integration"
   },
