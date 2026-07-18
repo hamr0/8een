@@ -12,7 +12,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
-  <img src="https://img.shields.io/badge/status-M5%20passed%20·%20v0.4.1-2a8c4f" alt="status: M5 passed, v0.4.1">
+  <img src="https://img.shields.io/badge/status-M5%20passed%20·%20v0.5.0-2a8c4f" alt="status: M5 passed, v0.5.0">
   <a href="https://github.com/hamr0/8een/actions/workflows/ci.yml"><img src="https://github.com/hamr0/8een/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <!-- No npm version badge: the only thing on the registry is an inert 0.0.0
        placeholder holding the name. A version badge would advertise it as a
@@ -41,15 +41,15 @@ Every claim above is pinned to a file, a line, and a commit in [`docs/02-evidenc
 
 ## Quick start
 
-**Published as bring-your-own-binary** (owner decision, PRD §9 D10): `npm install zk8een` gives you the verify module, the replay-safe HTTP gate ([below](#the-gate--replay-safe-by-default)), and the types — with zero runtime dependencies, vanilla Node ≥22 — and **it verifies nothing until you build the longfellow verifier binary yourself**. The build is documented ([`poc/M0-EVIDENCE.md`, step 1](https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md)); point `binary:` at the result and everything below works as shown (`provision()` fetches the 17 pinned, sha256-verified circuits for you). Prebuilt platform binaries remain open work — until they ship, this package is for adopters willing to compile a C++/Go project once.
+On **linux-x64**, `npm install zk8een` is now the whole install (PRD §9 D11): `provisionBinary()` fetches a prebuilt longfellow verifier — built from the pinned upstream commit + 8een's tracked patches by a [public workflow](.github/workflows/binaries.yml) that refuses to release a binary the full integration suite hasn't passed — and verifies every byte against a sha256 pinned inside the package. Zero runtime dependencies, vanilla Node ≥22. On other platforms it stays bring-your-own-binary (PRD §9 D10): build it once from the documented steps ([`poc/M0-EVIDENCE.md`, step 1](https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md)) and point `binary:` at the result.
 
 ```js
-import { Verifier, provision } from 'zk8een';
+import { Verifier, provision, provisionBinary } from 'zk8een';
 
 await provision('./circuits');            // 17 pinned circuits, sha256-verified
+await provisionBinary();                  // prebuilt verifier (linux-x64), sha256-pinned
 
 const verifier = await Verifier.start({
-  binary: './longfellow-verifier',
   circuitDir: './circuits',
   caCerts: './issuers.pem',               // THE trust boundary — choose it deliberately
   threshold: 18,                          // configurable; the output stays one bit
@@ -75,8 +75,7 @@ import { startGate } from 'zk8een';
 import express from 'express';
 
 const gate = await startGate({
-  binary: './longfellow-verifier',
-  circuitDir: './circuits',
+  circuitDir: './circuits',               // binary: omitted — the provisioned one is found
   caCerts: './issuers.pem',               // THE trust boundary — choose it deliberately
   challengeSecret: process.env.EIGHTEEN_SECRET,  // ≥16 bytes, stable, shared across replicas
   store: 'memory',                        // single-process DEV shortcut; use a Redis-backed

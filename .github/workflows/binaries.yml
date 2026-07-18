@@ -20,10 +20,6 @@ name: binaries
 
 on:
   workflow_dispatch:
-  # TEMPORARY (spike): dispatch is impossible until this file is on main, so
-  # run on pushes to the spike branch. Remove before merge.
-  push:
-    branches: [prebuilt-binaries]
 
 permissions:
   contents: read
@@ -113,9 +109,11 @@ jobs:
           if-no-files-found: error
 
   # Attaches the proven binary to the longfellow-bin-<N> release that
-  # src/binary.manifest.json points provisionBinary() at. Runs only on manual
-  # dispatch or an explicit [publish-binaries] commit message — a plain push to
-  # the spike branch builds and proves, but publishes nothing.
+  # src/binary.manifest.json points provisionBinary() at. Runs on manual
+  # dispatch, or — if a future spike re-adds a temporary push trigger (dispatch
+  # cannot see a workflow that is not on main yet; this one ran its first builds
+  # that way) — on an explicit [publish-binaries] commit message, so a plain
+  # spike push builds and proves but publishes nothing.
   release:
     needs: linux-x64
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[publish-binaries]')

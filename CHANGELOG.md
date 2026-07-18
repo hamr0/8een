@@ -4,6 +4,41 @@ All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) ·
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-07-18
+
+**Runtime change:** prebuilt verifier binaries (PRD §9 D11) — on linux-x64,
+`npm install zk8een` is now the whole install. Everywhere else the package stays
+bring-your-own-binary (D10) exactly as in `0.4.1`.
+
+### Added
+- **`provisionBinary(dir?, opts?)`** — fetches the prebuilt longfellow verifier
+  service for this platform (linux-x64 today) and refuses any byte that does not
+  match the sha256 pinned in `src/binary.manifest.json`, the same trust model as
+  the circuits: the download host (a GitHub release of this repo) is untrusted.
+  Idempotent, atomic; default target is the per-user cache
+  (`$XDG_CACHE_HOME`/`~/.cache` + `/zk8een`). `opts.platform` provisions for
+  another target (e.g. into a container image).
+- **`binary:` is now optional** on `Verifier.start` / `startGate`: when omitted,
+  the provisioned binary is found in the default dir and — because a binary,
+  unlike a circuit, cannot be integrity-checked by the service at load — is
+  **re-hashed against the pin on every start** (`resolveProvisionedBinary`). A
+  binary that rots or is swapped on disk is refused with the fix named, never
+  run. An explicit `binary:` path still wins, and the pin deliberately does not
+  apply to it (bring-your-own stays first-class).
+- **`.github/workflows/binaries.yml`** — the public build: clones upstream at the
+  pinned commit, applies the tracked patch series (`poc/patches/`), builds the
+  C++ core + cgo Go service on a clean runner, and **refuses to release a binary
+  the full integration suite has not passed on that runner** — with the suite's
+  skip count asserted to be zero, because green-by-skipping is this project's own
+  recurring failure shape. Assets land on the `longfellow-bin-1` release with
+  checksums; every released byte is auditable back to the workflow run that built
+  it. No `postinstall` auto-download — provisioning stays an explicit step.
+
+### Dev-only
+- CHANGELOG's bottom link-reference table completed (0.2.0–0.4.1 were missing).
+- `ci.yml` coverage comment corrected: a clean runner *can* run the integration
+  suite now — `binaries.yml` does exactly that on every build.
+
 ## [0.4.1] — 2026-07-16
 
 **Docs-only:** the dossier (M5). No runtime change.
@@ -360,6 +395,7 @@ verify"*. It never says *"you are underage"*.
   clock-independent or runs on the real clock. M2's test-CA removes the
   scaffolding.
 
+[0.5.0]: https://github.com/hamr0/8een/releases/tag/v0.5.0
 [0.4.1]: https://github.com/hamr0/8een/releases/tag/v0.4.1
 [0.4.0]: https://github.com/hamr0/8een/releases/tag/v0.4.0
 [0.3.0]: https://github.com/hamr0/8een/releases/tag/v0.3.0

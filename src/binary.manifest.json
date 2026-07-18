@@ -10,8 +10,8 @@
   "binaries": {
     "linux-x64": {
       "asset": "longfellow-verifier-linux-x64",
-      "sha256": "PENDING-PINNED-FROM-RELEASE-RUN",
-      "bytes": 0
+      "sha256": "756869602c84c116e9d94aa07b138a22373acd6f59b2b331e5bf7c0272175b00",
+      "bytes": 10124224
     }
   }
 }

@@ -44,7 +44,7 @@ import { readFileSync, existsSync, mkdtempSync, writeFileSync, readdirSync } fro
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Verifier, VerifierService, REASONS, issueChallenge, InMemoryNonceStore, createGate } from '../src/index.js';
+import { Verifier, VerifierService, REASONS, issueChallenge, InMemoryNonceStore, createGate, defaultBinaryDir, binaryManifest } from '../src/index.js';
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 
@@ -926,4 +926,53 @@ test('unlinkability: two presentations of one credential are indistinguishable (
 
   t.diagnostic(`verdicts identical across 3 presentations: ${JSON.stringify(a1)}`);
   t.diagnostic('the falsifiable check is TestProofBytesCarryNoPerCredentialIdentifier (tools/mkfixture)');
+});
+
+/*
+ * ---------------------------------------------------------------------------
+ * D11: the prebuilt binary path, end to end.
+ *
+ * Everything above drives the POC-built binary via an explicit `binary:`. This
+ * drives the OTHER path an adopter actually lands on: `provisionBinary()` has
+ * put the release-built, sha256-pinned verifier in the default dir, `binary:`
+ * is omitted, and Verifier.start re-hashes and runs THAT. Needs the provisioned
+ * binary on this machine (run provisionBinary() once); skips cleanly otherwise.
+ */
+const prebuiltEntry = binaryManifest.binaries[`${process.platform}-${process.arch}`];
+const prebuiltPath = prebuiltEntry ? join(defaultBinaryDir(), prebuiltEntry.asset) : null;
+const prebuiltSuite = {
+  skip: proofSuite.skip
+    ? proofSuite.skip
+    : prebuiltPath && existsSync(prebuiltPath)
+      ? false
+      : 'no provisioned prebuilt binary in defaultBinaryDir (run provisionBinary() once)',
+};
+
+test('D11: with binary omitted, the pin-verified prebuilt verifies and refuses like the POC build', prebuiltSuite, async (t) => {
+  const { binary: _poc, ...rig } = RIG();
+  const v = await Verifier.start({ ...rig, port: 8930 });
+  try {
+    const accept = await v.check(VALID());
+    assert.deepEqual(
+      { ok: accept.ok, over: accept.over_threshold, reason: accept.reason },
+      { ok: true, over: true, reason: 'verified' },
+      'a valid proof must verify through the prebuilt',
+    );
+
+    // One real "no" and one integrity refusal, so a subtly-miscompiled release
+    // binary cannot pass this test on the accept path alone.
+    const underage = await v.check(UNDERAGE());
+    assert.deepEqual(
+      { ok: underage.ok, over: underage.over_threshold, reason: underage.reason },
+      { ok: true, over: false, reason: 'claim_false' },
+    );
+    const tampered = await v.check(TAMPERED());
+    assert.deepEqual(
+      { ok: tampered.ok, over: tampered.over_threshold, reason: tampered.reason },
+      { ok: true, over: false, reason: 'zk_proof_invalid' },
+    );
+    t.diagnostic(`prebuilt at ${prebuiltPath} (release ${binaryManifest.release})`);
+  } finally {
+    await v.stop();
+  }
 });

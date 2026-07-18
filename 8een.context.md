@@ -28,18 +28,19 @@ mean.
   secret and store. So: use the gate, or turn `requireSingleUse` on yourself. Shipping
   the bare verifier as an age gate is the mistake that will bite you.
 - **Not an issuer.** It mints nothing and stores nothing.
-- **Not usable standalone yet.** It drives a longfellow verifier binary that this
-  package does not ship. See [Constraints](#constraints).
+- **It drives a longfellow verifier binary this package does not bundle.** On
+  **linux-x64**, `provisionBinary()` fetches a prebuilt, sha256-pinned one for you;
+  on every other platform you build it yourself. See [Constraints](#constraints).
 
 ## Minimal usage
 
 ```js
-import { Verifier, provision } from 'zk8een';
+import { Verifier, provision, provisionBinary } from 'zk8een';
 
 await provision('./circuits');              // 17 pinned circuits, sha256-verified
+await provisionBinary();                    // prebuilt verifier (linux-x64), sha256-pinned
 
 const verifier = await Verifier.start({
-  binary: './longfellow-verifier',          // you supply this — see Constraints
   circuitDir: './circuits',
   caCerts: './issuers.pem',                 // THE trust boundary
   threshold: 18,
@@ -91,6 +92,34 @@ does not match the pin is deleted and provisioning stops.
 
 - `opts.onProgress` — `({id, action, n, of}) => void`
 - `opts.fetchImpl` — inject a `fetch` (used by the test suite; no network needed)
+
+### `provisionBinary(dir?, opts?) → Promise<{path, action}>`
+
+Fetches the prebuilt longfellow verifier binary for this platform into `dir`
+(default: the per-user cache, `$XDG_CACHE_HOME`/`~/.cache` + `/zk8een`), verifying
+every byte against a sha256 pinned inside this package — the download host
+(a GitHub release of this repo) is *untrusted*. The binary is built by a public
+workflow from the pinned upstream commit plus 8een's tracked patch series, and a
+binary is only released after the full integration suite passed against it on the
+build runner. Idempotent; `action` is `'present'` or `'fetched'`.
+
+Only **linux-x64** is pinned today. Any other platform throws, naming the
+build-it-yourself path (`binary:`). Provision into the default dir and
+`Verifier.start` finds the binary with no `binary:` option; provision elsewhere
+(`opts.platform` provisions for another target, e.g. into a container image) and
+you pass the returned `path` yourself.
+
+- `opts.platform` — default `${process.platform}-${process.arch}`
+- `opts.onProgress` — `({asset, action}) => void`
+- `opts.fetchImpl` — inject a `fetch` (used by the test suite; no network needed)
+
+### `resolveProvisionedBinary(dir?, opts?) → Promise<string>`
+
+The path `Verifier.start` uses when `binary:` is omitted — **re-hashed against the
+pin on every call**. A binary that rots or is swapped on disk is refused with an
+error naming the fix, never run: unlike a circuit, a binary cannot be
+integrity-checked by the service at load time, so this is the last moment anyone
+can check it.
 
 ### `Verifier.start(opts) → Promise<Verifier>`
 
@@ -187,7 +216,7 @@ different transport. Never throws, whatever you hand it.
 
 | Option | Default | What it does |
 |---|---|---|
-| `binary` | *required* | Path to the longfellow verifier service binary. |
+| `binary` | *provisioned* | Path to the longfellow verifier service binary. Omit it after `provisionBinary()` — the provisioned binary is found in the default dir and re-hashed against the pin at every start. Pass a path to run your own build (the pin then deliberately does not apply). |
 | `circuitDir` | *required* | Directory of circuit files. Use `provision()`. |
 | `caCerts` | *required* | **PEM bundle of trusted issuer roots. THE TRUST BOUNDARY.** |
 | `threshold` | `18` | The age in "over N". The output stays one bit. |
@@ -330,10 +359,15 @@ Other properties:
 ## Constraints
 
 - **Node ≥ 22.** Zero runtime dependencies.
-- **You must supply the `binary`.** 8een drives the longfellow verifier service
-  (~10.5 MB, built from C++/cgo). **This package does not ship it**, so
-  `npm install zk8een` alone will not verify anything. Bundling or building it is
-  tracked work, not a decision you can configure around today.
+- **The verifier binary is fetched, not bundled.** 8een drives the longfellow
+  verifier service (10.1 MB, built from C++/cgo); the npm tarball does not contain
+  it. On **linux-x64**, `provisionBinary()` downloads a prebuilt one and verifies
+  it against a sha256 pinned in this package (see the API section) — it needs
+  ordinary system libraries only (glibc, libstdc++, libssl3, libzstd, zlib). On
+  any other platform you build the binary from the documented steps
+  ([`poc/M0-EVIDENCE.md`, step 1](https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md))
+  and pass its path as `binary:` — `npm install zk8een` alone still verifies
+  nothing there.
 - **No EU trust-list ingestion — but the anchors now exist.** 8een consumes a PEM
   bundle and an ISO 18013-5 VICAL (the US/AAMVA format); it does **not** parse the
   ETSI-signed XML that eIDAS trust lists use. What has changed is the source: the EU
