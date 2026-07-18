@@ -1,0 +1,109 @@
+# Builds the longfellow verifier binary on a clean public runner (PRD §9 D11).
+#
+# Why a workflow and not a laptop: the binary 8een adopters download must be
+# auditable back to the exact source that produced it. This workflow clones
+# upstream at the pinned commit, applies the tracked patch series (the build
+# baseline, poc/patches/), builds, and — before any byte leaves the runner —
+# PROVES the result by running 8een's full integration suite against it
+# (fixtures minted through cgo, real proofs accepted and refused on the real
+# clock). A binary that only compiled is not evidence; a binary that passed
+# the negative matrix is.
+#
+# Built on the oldest supported Ubuntu runner ON PURPOSE: the binary links
+# glibc/libstdc++ dynamically, and symbols are forward-compatible only —
+# building old runs everywhere newer. Runtime needs: libssl3, libzstd1,
+# zlib1g (upstream's own runtime-image list), plus libstdc++/glibc.
+#
+# Manual trigger only. Platforms: linux-x64 first (D11) — the one platform we
+# can build AND fully integration-test on a runner.
+name: binaries
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  LONGFELLOW_COMMIT: d8ad8f65187c7c364a3c2181ad484bcab03f0ec2
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.24'
+
+      - name: Install build dependencies (upstream Dockerfile list)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake libssl-dev libzstd-dev libgtest-dev libbenchmark-dev zlib1g-dev
+
+      - name: Clone longfellow-zk at the pinned commit
+        run: |
+          git init poc/longfellow-zk
+          git -C poc/longfellow-zk remote add origin https://github.com/google/longfellow-zk
+          git -C poc/longfellow-zk fetch --depth 1 origin "$LONGFELLOW_COMMIT"
+          git -C poc/longfellow-zk checkout FETCH_HEAD
+
+      - name: Apply the tracked patch series (the build baseline)
+        run: |
+          for p in "$PWD"/poc/patches/000*.patch; do
+            echo "applying ${p##*/}"
+            git -C poc/longfellow-zk apply "$p"
+          done
+
+      - name: Build the C++ core (cmake, clang, Release)
+        working-directory: poc/longfellow-zk
+        run: |
+          CXX=clang++ cmake -D CMAKE_BUILD_TYPE=Release -S lib -B build \
+            --install-prefix "$PWD/reference/verifier-service/install"
+          cmake --build build -j "$(nproc)" --target install
+
+      - name: Build the Go verifier service (cgo, links libmdoc_static.a)
+        working-directory: poc/longfellow-zk/reference/verifier-service/server
+        run: CGO_ENABLED=1 go build -o server .
+
+      - name: 'Evidence: what did we build?'
+        working-directory: poc/longfellow-zk/reference/verifier-service/server
+        run: |
+          file server
+          du -h server
+          echo "--- dynamic dependencies ---"
+          ldd server
+          echo "--- sha256 ---"
+          sha256sum server
+
+      - name: Install node devDependencies
+        run: npm ci
+
+      - name: 'Prove it: full integration suite against the freshly built binary'
+        # Mints fixtures through cgo against the install/ prefix, then drives
+        # the whole negative matrix on the real clock. THIS is the gate — a
+        # binary that hasn't passed it does not get uploaded.
+        #
+        # The suite SKIPS cleanly when its prerequisites are absent — correct
+        # on a contributor laptop, but on THIS runner a skip means the build
+        # is mispathed and the run proved nothing. Green-by-skipping is the
+        # exact silent-partial failure this project exists to refuse, so
+        # assert zero skips.
+        run: |
+          npm run test:integration 2>&1 | tee itest.log
+          grep -E '^# (tests|pass|fail|skipped)' itest.log
+          SKIPPED=$(grep -oE '^# skipped [0-9]+' itest.log | grep -oE '[0-9]+')
+          if [ "${SKIPPED:-1}" -ne 0 ]; then
+            echo "::error::integration suite skipped $SKIPPED tests — prerequisites mispathed; this run proves nothing"
+            exit 1
+          fi
+
+      - name: Upload binary + checksum as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: longfellow-verifier-linux-x64
+          path: poc/longfellow-zk/reference/verifier-service/server/server
+          if-no-files-found: error
