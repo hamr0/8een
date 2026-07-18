@@ -20,6 +20,10 @@ name: binaries
 
 on:
   workflow_dispatch:
+  # TEMPORARY (spike): dispatch is impossible until this file is on main, so
+  # run on pushes to the spike branch. Remove before merge.
+  push:
+    branches: [prebuilt-binaries]
 
 permissions:
   contents: read
