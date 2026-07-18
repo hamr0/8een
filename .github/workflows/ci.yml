@@ -7,9 +7,10 @@
 #
 # COVERAGE, stated rather than implied: this runs the UNIT suite only. The
 # integration suite drives a real longfellow verifier, which needs a C++/cgo
-# build no clean runner has. It runs locally before a release and its evidence
-# lives in docs/02-evidence/M1-EVIDENCE.md. A green run here is NOT a claim that
-# the integration suite passed.
+# build this fast gate does not do. It runs locally before a release (evidence
+# in docs/02-evidence/) and on every binaries.yml run, which builds the verifier
+# from source and refuses to ship a binary the suite has not passed. A green run
+# HERE is NOT a claim that the integration suite passed.
 name: ci
 
 on:

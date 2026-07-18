@@ -111,3 +111,49 @@ jobs:
           name: longfellow-verifier-linux-x64
           path: poc/longfellow-zk/reference/verifier-service/server/server
           if-no-files-found: error
+
+  # Attaches the proven binary to the longfellow-bin-<N> release that
+  # src/binary.manifest.json points provisionBinary() at. Runs only on manual
+  # dispatch or an explicit [publish-binaries] commit message — a plain push to
+  # the spike branch builds and proves, but publishes nothing.
+  release:
+    needs: linux-x64
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[publish-binaries]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: longfellow-bin-1
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: longfellow-verifier-linux-x64
+
+      - name: Name the asset and write its checksum
+        run: |
+          mv server longfellow-verifier-linux-x64
+          sha256sum longfellow-verifier-linux-x64 | tee SHA256SUMS
+
+      - name: Create the release if it does not exist, then attach the assets
+        run: |
+          cat > notes.md <<EOF
+          Prebuilt longfellow verifier service (PRD §9 D11).
+
+          - upstream: https://github.com/google/longfellow-zk @ \`$LONGFELLOW_COMMIT\`
+          - patches applied: the tracked series in \`poc/patches/\` (0001, 0002, 0003 — the build baseline)
+          - built and integration-tested by workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - runtime needs: glibc, libstdc++, libssl3, libzstd1, zlib1g (linux-x64)
+
+          Do not download these by hand — \`provisionBinary()\` in the zk8een package fetches and sha256-verifies them against the manifest pinned in the package.
+          EOF
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # --latest=false: this is a binary-artifact release, it must never
+            # displace the package's own vX.Y.Z as the repo's "latest release".
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --latest=false \
+              --title "longfellow verifier binaries #1" \
+              --notes-file notes.md
+          fi
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            longfellow-verifier-linux-x64 SHA256SUMS
