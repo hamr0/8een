@@ -243,12 +243,13 @@ The frozen pin the circuit downloads are checked against — upstream `commit`,
 `path`, and a `sha256` + `bytes` per circuit. Read it if you want to vendor or
 audit the artefacts; you never need it for normal use.
 
-> **Not exported, on purpose.** `VerifierService` (the raw subprocess driver —
-> `Verifier` wraps it), `inspectChallenge` and `applySingleUse` (the internals
-> `check()` calls) were exported before 0.5.0 without ever being documented, and
-> were removed in 0.5.0. `manifest` became `circuitsManifest` in the same pass, so
-> the name says whose. Hand-rolling replay defence out of the challenge internals
-> is the failure `requireSingleUse` fails closed to prevent — use the gate.
+> **Deprecated, still working, gone in 0.6.0.** `manifest` (now
+> `circuitsManifest` — same value, so migrating is a rename), `VerifierService`
+> (the raw subprocess driver; `Verifier` wraps it), and `inspectChallenge` /
+> `applySingleUse` (the internals `check()` calls) were exported before 0.5.0 and
+> documented nowhere. They still resolve and still typecheck; they just carry
+> `@deprecated` now. Hand-rolling replay defence out of the challenge internals is
+> the failure `requireSingleUse` fails closed to prevent — use the gate.
 
 ## All options
 

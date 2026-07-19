@@ -30,15 +30,9 @@ import { provision, manifest as circuitsManifest } from './circuits.js';
 // resolves the binary for you, and an export is a promise that is cheap to make
 // now and breaking to take back.
 import { provisionBinary, resolveProvisionedBinary } from './binary.js';
-import { issueChallenge, applySingleUse, InMemoryNonceStore } from './challenge.js';
+import { issueChallenge, inspectChallenge, applySingleUse, InMemoryNonceStore } from './challenge.js';
 
-// The same rule, applied to the surface that predates it (0.5.0). `VerifierService`
-// (the raw subprocess driver -- `Verifier` wraps it), `inspectChallenge` and
-// `applySingleUse` (the plumbing `check()` calls internally; hand-rolling replay
-// defence with them is the failure D8 fails closed to prevent) were exported without
-// ever being documented, and came back OUT. `manifest` -- an export named `manifest`
-// tells the reader nothing about whose -- is now `circuitsManifest`, matching the
-// `binaryManifest` it sits beside. Tests import all of these from their own modules.
+// The supported surface.
 export {
   REASONS,
   classify,
@@ -48,6 +42,34 @@ export {
   issueChallenge,
   InMemoryNonceStore,
 };
+
+// -- Deprecated: still exported, scheduled for removal in 0.6.0 --------------
+//
+// These four were exported before 0.5.0 and documented nowhere, which is exactly
+// what LIBRARY_CONVENTIONS §1 (default OUT) exists to prevent. But `exports`
+// declares only "." -- there is no subpath escape hatch, so DELETING them would
+// leave anyone who imported them with no migration path at all, only a crash.
+// An export is a promise that is cheap to make and breaking to take back; the
+// answer to having made it carelessly is to withdraw it on notice, not to break
+// someone's build to tidy our own surface. They keep working, warn in an editor
+// via @deprecated, and go in 0.6.0.
+
+/** @deprecated Renamed to `circuitsManifest` (an export named `manifest` does not
+ * say whose). Removed in 0.6.0 -- switch the name, the value is identical. */
+export { circuitsManifest as manifest };
+
+/** @deprecated The raw subprocess driver. `Verifier` wraps it and is what you
+ * want; nothing in the docs has ever asked you to hold this. Removed in 0.6.0. */
+export { VerifierService };
+
+/** @deprecated Internal plumbing that `Verifier.check()` calls for you. Building
+ * replay defence out of it by hand is the failure `requireSingleUse` fails closed
+ * to prevent (PRD §9 D8) -- use `startGate`/`createGate`. Removed in 0.6.0. */
+export { inspectChallenge };
+
+/** @deprecated Internal plumbing that `Verifier.check()` calls for you. See
+ * `inspectChallenge`. Removed in 0.6.0. */
+export { applySingleUse };
 
 // The HTTP gate (M4 piece 3) is the "adopt without thinking" layer: replay-safe by
 // default. It lives in its own module because it imports `Verifier` from here.

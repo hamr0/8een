@@ -10,26 +10,29 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 `npm install zk8een` is now the whole install. Everywhere else the package stays
 bring-your-own-binary (D10) exactly as in `0.4.1`.
 
-### Removed — BREAKING
-The public surface was trimmed to what is documented, before 1.0 makes it
-permanent (LIBRARY_CONVENTIONS §1 — default OUT; an export is a promise that is
-cheap to make and breaking to take back). Each of these was exported without ever
-appearing in `README.md` or `8een.context.md`:
+### Deprecated — nothing removed, nothing breaks
+Four exports were named without ever appearing in `README.md` or
+`8een.context.md`, which is what LIBRARY_CONVENTIONS §1 (default OUT) exists to
+prevent. **They all still work.** They now carry `@deprecated`, so an editor flags
+them, and they go in `0.6.0`:
 
-- **`VerifierService`** — the raw subprocess driver. `Verifier` wraps it and is
-  what adopters were always meant to hold.
-- **`inspectChallenge`, `applySingleUse`** — the internals `Verifier.check()`
-  calls. Exposing them invited hand-rolled replay defence, which is precisely the
-  failure `requireSingleUse` fails closed to prevent (§9 D8). Use the gate.
-- **`manifest` → renamed `circuitsManifest`** — an export named `manifest` does
-  not say whose; it now matches the `binaryManifest` it sits beside.
+- **`manifest` → `circuitsManifest`** — an export named `manifest` does not say
+  whose; the new name matches the `binaryManifest` it sits beside. Identical value,
+  so migrating is a rename.
+- **`VerifierService`** — the raw subprocess driver. `Verifier` wraps it and is what
+  adopters were always meant to hold.
+- **`inspectChallenge`, `applySingleUse`** — the internals `Verifier.check()` calls.
+  Hand-rolling replay defence out of them is precisely the failure
+  `requireSingleUse` fails closed to prevent (§9 D8). Use the gate.
 
-This is a **hard** removal: `exports` declares only `"."`, so there is no subpath
-escape hatch (`import 'zk8een/src/service.js'` throws `ERR_PACKAGE_PATH_NOT_EXPORTED`
-— verified, not assumed). The only released version carrying these is `0.4.1`, which
-is being deprecated in the same release. If one of them was load-bearing for you,
-open an issue and say what for — that is the evidence needed to export it back
-deliberately, with a documented contract, instead of by accident.
+Deleting them outright was written and then reverted before release. `exports`
+declares only `"."`, so there is no subpath escape hatch — `import
+'zk8een/src/service.js'` throws `ERR_PACKAGE_PATH_NOT_EXPORTED` (verified). A hard
+removal would therefore have left anyone importing them with no migration path,
+only a crash. An export is a promise that is cheap to make and breaking to take
+back; the answer to having made one carelessly is to withdraw it **on notice**, not
+to break someone's build to tidy our own surface. Verified by typechecking and
+importing every old name from a real packed tarball as a `0.4.1`-era consumer would.
 
 ### Added
 - **`provisionBinary(dir?, opts?)`** — fetches the prebuilt longfellow verifier
