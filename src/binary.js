@@ -96,7 +96,14 @@ function hostPlatform() {
  * @returns {{asset: string, sha256: string, bytes: number}}
  */
 function entryFor(platform, { explicitTarget = false } = {}) {
-  const entry = manifest.binaries[platform];
+  // `Object.hasOwn`, not a bare lookup: `binaries['__proto__']` (or `constructor`,
+  // `toString`, ...) inherits a truthy value from Object.prototype, sails past the
+  // `!entry` guard, and turns into a fetch of `longfellow-verifier-undefined` with
+  // an undefined pin. The integrity boundary still refuses those bytes -- the length
+  // check fails closed on `undefined` (verified) -- but the adopter gets a network
+  // error about a URL they never asked for instead of "no prebuilt for that
+  // platform". `circuits.js` already validates its ids this way; this matches it.
+  const entry = Object.hasOwn(manifest.binaries, platform) ? manifest.binaries[platform] : undefined;
   if (!entry) {
     const have = Object.keys(manifest.binaries).join(', ');
     throw new Error(

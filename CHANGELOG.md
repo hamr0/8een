@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) ·
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.0] — 2026-07-18
+## [0.5.0] — 2026-07-20
 
 **Runtime change:** prebuilt verifier binaries (PRD §9 D11) — on linux-x64,
 `npm install zk8een` is now the whole install. Everywhere else the package stays
@@ -103,6 +103,15 @@ importing every old name from a real packed tarball as a `0.4.1`-era consumer wo
 - **The "build it yourself" error pointed at a file that is not in the tarball.**
   It cited `poc/M0-EVIDENCE.md`; `poc/` is not in `files`, so a macOS adopter
   greps `node_modules` for it and finds nothing. It now gives the URL.
+- **An inherited key was accepted as a platform.** `manifest.binaries[platform]`
+  is a bare lookup, so `provisionBinary(dir, { platform: '__proto__' })` — or
+  `constructor`, `toString` — inherited a truthy value from `Object.prototype`,
+  sailed past the "no prebuilt" guard, and became a fetch of
+  `longfellow-verifier-undefined` against an undefined pin. **The integrity
+  boundary held**: the length check fails closed on `undefined`, so unpinned bytes
+  were still refused (verified by serving hostile bytes through that path). The
+  defect was the diagnosis, not the trust model. Now an `Object.hasOwn` guard, the
+  same way `circuits.js` already validates its ids.
 
 ### Internal
 - **`src/pinned.js`** — the fetch-and-verify sequence (reachability, advertised

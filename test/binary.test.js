@@ -165,6 +165,22 @@ test('musl refuses an implicit provision but never an explicitly targeted one', 
   );
 });
 
+test('an inherited key is not a platform', async () => {
+  // `binaries['__proto__']` inherits a truthy value from Object.prototype, so a
+  // bare lookup sails past the `!entry` guard and becomes a fetch of
+  // `longfellow-verifier-undefined` against an undefined pin. The integrity
+  // boundary still refuses those bytes -- the length check fails closed on
+  // `undefined` -- but the adopter should get "no prebuilt", not a network error
+  // about a URL they never named.
+  for (const key of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+    await assert.rejects(provisionBinary(tmp('bin-proto'), { platform: key }), (err) => {
+      assert.match(err.message, new RegExp(`no prebuilt verifier binary for ${key}`));
+      assert.doesNotMatch(err.message, /cannot reach|undefined bytes/, 'must not attempt a fetch');
+      return true;
+    });
+  }
+});
+
 test('resolveProvisionedBinary refuses an empty or mismatched dir, naming the fix', async () => {
   const dir = tmp('bin-empty');
   await assert.rejects(resolveProvisionedBinary(dir, PINNED), /Run provisionBinary\(\)/);
