@@ -1,0 +1,243 @@
+# Builds the longfellow verifier binary on a clean public runner (PRD §9 D11).
+#
+# Why a workflow and not a laptop: the binary 8een adopters download must be
+# auditable back to the exact source that produced it. This workflow clones
+# upstream at the pinned commit, applies the tracked patch series (the build
+# baseline, poc/patches/), builds, and — before any byte leaves the runner —
+# PROVES the result by running 8een's full integration suite against it
+# (fixtures minted through cgo, real proofs accepted and refused on the real
+# clock). A binary that only compiled is not evidence; a binary that passed
+# the negative matrix is.
+#
+# Built on the oldest supported Ubuntu runner ON PURPOSE: the binary links
+# glibc/libstdc++ dynamically, and symbols are forward-compatible only —
+# building old runs everywhere newer. Runtime needs: libssl3, libzstd1,
+# zlib1g (upstream's own runtime-image list), plus libstdc++/glibc.
+#
+# Manual trigger only. Platforms: linux-x64 first (D11) — the one platform we
+# can build AND fully integration-test on a runner.
+name: binaries
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-22.04
+    outputs:
+      release-tag: ${{ steps.manifest.outputs.release }}
+      pinned-sha256: ${{ steps.manifest.outputs.sha256 }}
+      commit: ${{ steps.manifest.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.24'
+
+      - name: Read the build baseline from src/binary.manifest.js
+        # SINGLE SOURCE OF TRUTH. The manifest is what the shipped package
+        # verifies against, so the build must take its commit, patch list, and
+        # release tag from there rather than keeping a second copy here that can
+        # drift into building something the package will refuse.
+        id: manifest
+        # Dynamic import, not require(): the manifest is a plain ESM module
+        # (LIBRARY_CONVENTIONS §1 — no JSON imports leaking into the public
+        # .d.ts), and this package is "type": "module", so require() would throw.
+        run: |
+          read_manifest() {
+            node --input-type=module -e \
+              "const m = (await import('./src/binary.manifest.js')).default; $1"
+          }
+          {
+            echo "commit=$(read_manifest 'console.log(m.commit)')"
+            echo "release=$(read_manifest 'console.log(m.release)')"
+            echo "sha256=$(read_manifest "console.log(m.binaries['linux-x64'].sha256)")"
+          } >> "$GITHUB_OUTPUT"
+          echo "patches<<EOF" >> "$GITHUB_OUTPUT"
+          read_manifest 'console.log(m.patches.join("\n"))' >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies (upstream Dockerfile list)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake libssl-dev libzstd-dev libgtest-dev libbenchmark-dev zlib1g-dev
+
+      - name: Clone longfellow-zk at the pinned commit
+        env:
+          LONGFELLOW_COMMIT: ${{ steps.manifest.outputs.commit }}
+        run: |
+          git init poc/longfellow-zk
+          git -C poc/longfellow-zk remote add origin https://github.com/google/longfellow-zk
+          git -C poc/longfellow-zk fetch --depth 1 origin "$LONGFELLOW_COMMIT"
+          git -C poc/longfellow-zk checkout FETCH_HEAD
+
+      - name: Apply the tracked patch series (the build baseline)
+        # Applied BY NAME from the manifest, in manifest order — not a `000*`
+        # glob. A glob would silently pick up an untracked or renamed patch and
+        # build something the manifest does not describe.
+        env:
+          PATCHES: ${{ steps.manifest.outputs.patches }}
+        run: |
+          while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            echo "applying $p"
+            git -C poc/longfellow-zk apply "$PWD/poc/patches/$p"
+          done <<< "$PATCHES"
+
+      - name: Build the C++ core (cmake, clang, Release)
+        working-directory: poc/longfellow-zk
+        run: |
+          CXX=clang++ cmake -D CMAKE_BUILD_TYPE=Release -S lib -B build \
+            --install-prefix "$PWD/reference/verifier-service/install"
+          cmake --build build -j "$(nproc)" --target install
+
+      - name: Build the Go verifier service (cgo, links libmdoc_static.a)
+        working-directory: poc/longfellow-zk/reference/verifier-service/server
+        run: CGO_ENABLED=1 go build -o server .
+
+      - name: 'Evidence: what did we build?'
+        working-directory: poc/longfellow-zk/reference/verifier-service/server
+        run: |
+          file server
+          du -h server
+          echo "--- dynamic dependencies ---"
+          ldd server
+          echo "--- sha256 ---"
+          sha256sum server
+
+      - name: Install node devDependencies
+        run: npm ci
+
+      - name: 'Prove it: full integration suite against the freshly built binary'
+        # Mints fixtures through cgo against the install/ prefix, then drives
+        # the whole negative matrix on the real clock. THIS is the gate — a
+        # binary that hasn't passed it does not get uploaded.
+        #
+        # The suite SKIPS cleanly when its prerequisites are absent — correct
+        # on a contributor laptop, but on THIS runner a skip means the build
+        # is mispathed and the run proved nothing. Green-by-skipping is the
+        # exact silent-partial failure this project exists to refuse, so the
+        # counts below are asserted rather than eyeballed.
+        #
+        # `set -o pipefail` is load-bearing, not decoration: Actions' default
+        # shell is `bash -e {0}`, where the exit status of `cmd | tee log` is
+        # TEE's — zero — so without it a FAILING suite sailed through this step
+        # and its binary was uploaded and released. Measured, not theorised.
+        # Belt and braces: the summary counts are asserted too, so the gate
+        # survives someone dropping the pipefail later.
+        #
+        # ONE skip is legitimate here and only one: the D11 prebuilt-path test
+        # needs a binary provisioned from the RELEASE, which a runner building
+        # that very binary does not have (and on a new longfellow-bin-N is not
+        # yet published). Every other skip means a mispathed prerequisite, so
+        # skips are matched against that specific reason rather than tolerated
+        # by count.
+        run: |
+          set -o pipefail
+          npm run test:integration 2>&1 | tee itest.log
+          grep -E '^# (tests|pass|fail|skipped)' itest.log
+          count() { grep -oE "^# $1 [0-9]+" itest.log | grep -oE '[0-9]+' | tail -1; }
+          TESTS=$(count tests); PASS=$(count pass); FAIL=$(count fail); SKIPPED=$(count skipped)
+          LEGIT=$(grep -c 'no provisioned prebuilt binary' itest.log || true)
+          if [ "${TESTS:-0}" -lt 30 ]; then
+            echo "::error::only ${TESTS:-0} tests ran — the suite did not execute properly; this run proves nothing"
+            exit 1
+          fi
+          if [ "${FAIL:-1}" -ne 0 ] || [ "${PASS:-0}" -eq 0 ]; then
+            echo "::error::integration suite failed (${FAIL} failed, ${PASS} passed) — this binary is not fit to release"
+            exit 1
+          fi
+          if [ "${SKIPPED:-1}" -gt "${LEGIT:-0}" ]; then
+            echo "::error::integration suite skipped ${SKIPPED} tests but only ${LEGIT} are the expected prebuilt-path skip — prerequisites mispathed; this run proves nothing"
+            exit 1
+          fi
+          echo "✅ ${PASS}/${TESTS} passed, ${SKIPPED} expected skip(s) — binary is fit to release"
+
+      - name: Upload binary + checksum as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: longfellow-verifier-linux-x64
+          path: poc/longfellow-zk/reference/verifier-service/server/server
+          if-no-files-found: error
+
+  # Attaches the proven binary to the longfellow-bin-<N> release that
+  # src/binary.manifest.js points provisionBinary() at. Runs on manual
+  # dispatch, or — if a future spike re-adds a temporary push trigger (dispatch
+  # cannot see a workflow that is not on main yet; this one ran its first builds
+  # that way) — on an explicit [publish-binaries] commit message, so a plain
+  # spike push builds and proves but publishes nothing.
+  release:
+    needs: linux-x64
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[publish-binaries]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.linux-x64.outputs.release-tag }}
+      PINNED_SHA256: ${{ needs.linux-x64.outputs.pinned-sha256 }}
+      LONGFELLOW_COMMIT: ${{ needs.linux-x64.outputs.commit }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: longfellow-verifier-linux-x64
+
+      - name: Name the asset and write its checksum
+        run: |
+          mv server longfellow-verifier-linux-x64
+          sha256sum longfellow-verifier-linux-x64 | tee SHA256SUMS
+
+      - name: Refuse to replace a published asset with different bytes
+        # `--clobber` overwrites in place, and every zk8een already on npm pins
+        # the OLD asset's sha256. Silently swapping the bytes under a live tag
+        # would break `provisionBinary()` for every published version — a
+        # supply-integrity failure, not a convenience issue.
+        #
+        # So: if the manifest already pins a real hash for this release, the
+        # freshly built binary must match it. A genuinely new build belongs
+        # under a NEW longfellow-bin-N tag, with the manifest pin updated in the
+        # same commit. Bootstrapping a tag whose pin is still a placeholder is
+        # the one case that may proceed.
+        run: |
+          BUILT=$(sha256sum longfellow-verifier-linux-x64 | cut -d' ' -f1)
+          echo "built:  $BUILT"
+          echo "pinned: $PINNED_SHA256"
+          if [ "$BUILT" = "$PINNED_SHA256" ]; then
+            echo "✅ built bytes match the manifest pin"
+          elif ! printf '%s' "$PINNED_SHA256" | grep -qE '^[0-9a-f]{64}$'; then
+            echo "::notice::manifest pin for $RELEASE_TAG is a placeholder — bootstrapping; pin $BUILT into src/binary.manifest.js"
+          elif gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::$RELEASE_TAG is already published and the build differs from its pinned sha256. Overwriting it would break provisionBinary() for every zk8een already on npm. Cut a new longfellow-bin-N tag and update src/binary.manifest.js in the same commit."
+            exit 1
+          else
+            echo "::notice::$RELEASE_TAG not yet published; pin $BUILT into src/binary.manifest.js"
+          fi
+
+      - name: Create the release if it does not exist, then attach the assets
+        run: |
+          cat > notes.md <<EOF
+          Prebuilt longfellow verifier service (PRD §9 D11).
+
+          - upstream: https://github.com/google/longfellow-zk @ \`$LONGFELLOW_COMMIT\`
+          - patches applied: the tracked series in \`poc/patches/\` (0001, 0002, 0003 — the build baseline)
+          - built and integration-tested by workflow run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          - runtime needs: glibc, libstdc++, libssl3, libzstd1, zlib1g (linux-x64)
+
+          Do not download these by hand — \`provisionBinary()\` in the zk8een package fetches and sha256-verifies them against the manifest pinned in the package.
+          EOF
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            # --latest=false: this is a binary-artifact release, it must never
+            # displace the package's own vX.Y.Z as the repo's "latest release".
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" --latest=false \
+              --title "longfellow verifier binaries #1" \
+              --notes-file notes.md
+          fi
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            longfellow-verifier-linux-x64 SHA256SUMS

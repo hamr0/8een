@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: Apache-2.0
+/**
+ * The 17 pinned circuit files, keyed by circuit id.
+ *
+ * Plain ESM, not JSON — see the note in binary.manifest.js. Shipped as JSON
+ * since 0.1.0, it leaked an unresolvable import into the published .d.ts.
+ *
+ * Frozen: it is a pin, and a pin that can be mutated at runtime is not a pin.
+ */
+export default Object.freeze({
+    "upstream": "https://github.com/google/longfellow-zk",
+    "commit": "d8ad8f65187c7c364a3c2181ad484bcab03f0ec2",
+    "path": "lib/circuits/mdoc/circuits",
+    "circuits": [
+      {
+        "id": "137e5a75ce72735a37c8a72da1a8a0a5df8d13365c2ae3d2c2bd6a0e7197c7c6",
+        "sha256": "12050d8baaa37eb8225a3dcf5cb6139a0ccd4fa63a0e0ac2555ecb4810ada8a3",
+        "bytes": 278354
+      },
+      {
+        "id": "3546d1e1a59142ded29a26d30ae4155d682b0f7f2b1a78a1cc63f94b211cbda0",
+        "sha256": "0a496b8e5d922f2e0b4796840cfc7b8c7fd74c340776bd4d86fe1b5bf47e8a5a",
+        "bytes": 223189
+      },
+      {
+        "id": "446ffab2fc5bfc71d748dec8ec1785f33b8f399b6ff50d1e0a4a9facd7e66c62",
+        "sha256": "0d8b05e42d4a051ac2af522ded3b7a7d5e21fd41709f32e1ebf6e42d93316ea8",
+        "bytes": 228176
+      },
+      {
+        "id": "5aebdaaafe17296a3ef3ca6c80c6e7505e09291897c39700410a365fb278e460",
+        "sha256": "3a979b6e6a7df8e9404b2293d60c3277d3ba2a1846baa82e5fad75cbe3bbc76b",
+        "bytes": 336033
+      },
+      {
+        "id": "6a5810683e62b6d7766ebd0d7ca72518a2b8325418142adcadb10d51dbbcd5ad",
+        "sha256": "deb83076b7300d94f18e287e3fe4705823074979165ad08645c97a93c0363968",
+        "bytes": 312363
+      },
+      {
+        "id": "7bcb1a2aee2fbd9907aeef97003fe68fbdaccca94bb048f6079877f7b2caee7c",
+        "sha256": "507d4b380110af2a6b281a1d61252aacfef43df3432a5ddbab767ee0cf0ac045",
+        "bytes": 213466
+      },
+      {
+        "id": "89288b9aa69d2120d211618fcca8345deb4f85d2e710c220cc9c059bbee4c91f",
+        "sha256": "6dd890da2029cdca0ba197ec6a91138cf603607f5b99e5491fec2f4c7b3aaa9e",
+        "bytes": 214041
+      },
+      {
+        "id": "8d079211715200ff06c5109639245502bfe94aa869908d31176aae4016182121",
+        "sha256": "9016d173d8a579a104591b85826798bfbb03eafa7b376ad18c5344eab3a92769",
+        "bytes": 316385
+      },
+      {
+        "id": "8ee4849ae1293ae6fe5f9082ce3e5e15c4f198f2998c682fa1b727237d6d252f",
+        "sha256": "25fb28acd806a15b88538ee612f0da47bf29e6dcb0803f2c268c87f3f224b968",
+        "bytes": 329262
+      },
+      {
+        "id": "b2211223b954b34a1081e3fbf71b8ea2de28efc888b4be510f532d6ba76c2010",
+        "sha256": "e818e1cca16b6bc2e81963e673ae490bb42b3a61425d04c8e9b79d0294ec3917",
+        "bytes": 306453
+      },
+      {
+        "id": "b4bb6f01b7043f4f51d8302a30b36e3d4d2d0efc3c24557ab9212ad524a9764e",
+        "sha256": "0185b762cffb3f50fa587f9be30cd93e7db0cd27be3e85d5688c1733ac7be6b9",
+        "bytes": 308557
+      },
+      {
+        "id": "c27195e03e22c9ab4efe9e1dabd2c33aa8b2429cc4e86410c6f12542d3c5e0a1",
+        "sha256": "76049e66fabb8f76e0b9f712f295099b6a6be077329cc9e072df1496dc7970a5",
+        "bytes": 227985
+      },
+      {
+        "id": "c70b5f44a1365c53847eb8948ad5b4fdc224251a2bc02d958c84c862823c49d6",
+        "sha256": "dc6562eecfcfacca665ae4baa23cfa472074f1de17f0f6fe7376b676006b05ea",
+        "bytes": 315043
+      },
+      {
+        "id": "c87721054ae14f3a54462ba975a3cf53e65ec648196528053da82067e103e64e",
+        "sha256": "b78bf1052cb86b19dae56a4d74284adc92fa110a82d94381699499758b079cc2",
+        "bytes": 234693
+      },
+      {
+        "id": "f51b7248b364462854d306326abded169854697d752d3bb6d9a9446ff7605ddb",
+        "sha256": "ef6e523426acb584465cc3244979013d85f92b90ff72eee2ae339740a6351563",
+        "bytes": 223003
+      },
+      {
+        "id": "f88a39e561ec0be02bb3dfe38fb609ad154e98decbbe632887d850fc612fea6f",
+        "sha256": "ee57c47fe591b08135a13a9f2fd2a01ea3545b64d212d5c25898a709edf4d3b5",
+        "bytes": 216252
+      },
+      {
+        "id": "fa5fadfb2a916d3b71144e9b412eff78f71fd6a6d4607eac10de66b195868b7a",
+        "sha256": "13395cd75f61311347ed0099fbefc07277e96ce2fbaac1d6be0a6ccc04b44619",
+        "bytes": 234643
+      }
+    ]
+  });

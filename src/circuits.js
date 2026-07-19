@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Puts the circuit files on disk, and refuses to accept bytes that are not the
  * ones we pinned.
@@ -23,14 +24,12 @@
  * reporting healthy -- so we fail loudly here, before it ever gets that chance.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import manifest from './circuits.manifest.json' with { type: 'json' };
+import manifest from './circuits.manifest.js';
+import { fetchPinned, isIntact } from './pinned.js';
 
 export { manifest };
-
-const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
 const CIRCUIT_ID = /^[0-9a-f]{64}$/;
 
@@ -84,66 +83,16 @@ export async function provision(dir, opts = {}) {
   return { dir, present, fetched };
 }
 
-async function isIntact(path, expected) {
-  try {
-    return sha256(await readFile(path)) === expected;
-  } catch {
-    return false; // absent, unreadable -- either way, fetch it
-  }
-}
-
 async function fetchCircuit(circuit, path, fetchImpl) {
-  const url = sourceUrl(circuit.id);
-
-  let res;
-  try {
-    res = await fetchImpl(url, { signal: AbortSignal.timeout(60_000) });
-  } catch (err) {
-    throw new Error(`circuit ${circuit.id.slice(0, 12)}: cannot reach ${url}: ${err.message}`);
-  }
-  if (!res.ok) {
-    throw new Error(`circuit ${circuit.id.slice(0, 12)}: ${url} returned HTTP ${res.status}`);
-  }
-
-  // Refuse an oversized body BEFORE reading it into memory. Waiting for the
-  // sha256 to catch a bad download is fine for correctness and useless for
-  // availability: a hostile or compromised host answering with a 10 GB body
-  // would exhaust memory long before we ever got to hash it.
-  const advertised = Number(res.headers?.get?.('content-length'));
-  if (Number.isFinite(advertised) && advertised > circuit.bytes) {
-    throw new Error(
-      `circuit ${circuit.id.slice(0, 12)}: ${url} advertises ${advertised} bytes, ` +
-        `expected ${circuit.bytes}. Refusing to download it.`,
-    );
-  }
-
-  const bytes = Buffer.from(await res.arrayBuffer());
-
-  if (bytes.length !== circuit.bytes) {
-    throw new Error(
-      `circuit ${circuit.id.slice(0, 12)}: expected ${circuit.bytes} bytes, got ${bytes.length}. Refusing.`,
-    );
-  }
-  const got = sha256(bytes);
-  if (got !== circuit.sha256) {
-    throw new Error(
-      `circuit ${circuit.id.slice(0, 12)}: SHA256 MISMATCH.\n` +
-        `  expected ${circuit.sha256}\n  received ${got}\n` +
-        `These are not the bytes pinned at upstream ${manifest.commit.slice(0, 8)}. Refusing to install them.`,
-    );
-  }
-
-  // Write beside the target, then rename: a crash mid-write must never leave a
-  // truncated circuit that later looks like a merely-corrupt file. The suffix is
-  // random rather than the pid, because a pid is recycled -- a stale .part-<pid>
-  // from a killed run would then collide with 'wx' and wedge provisioning for
-  // good, with an EEXIST that says nothing about the real problem.
-  const partial = `${path}.part-${randomUUID()}`;
-  try {
-    await writeFile(partial, bytes, { flag: 'wx' });
-    await rename(partial, path);
-  } catch (err) {
-    await unlink(partial).catch(() => {});
-    throw err;
-  }
+  await fetchPinned(
+    {
+      url: sourceUrl(circuit.id),
+      label: `circuit ${circuit.id.slice(0, 12)}`,
+      bytes: circuit.bytes,
+      sha256: circuit.sha256,
+      path,
+      origin: `at upstream ${manifest.commit.slice(0, 8)}`,
+    },
+    fetchImpl,
+  );
 }

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Turns one raw exchange with the longfellow verifier service into one bit.
  *

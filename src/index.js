@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * 8een -- the verifier half.
  *
@@ -22,20 +23,53 @@
 
 import { VerifierService } from './service.js';
 import { classify, REASONS } from './verdict.js';
-import { provision, manifest } from './circuits.js';
+import { provision, manifest as circuitsManifest } from './circuits.js';
+// Only `provisionBinary` is public (LIBRARY_CONVENTIONS §1 -- default OUT on new
+// API surface; the burden of proof is on adding). `resolveProvisionedBinary`,
+// `defaultBinaryDir` and `binaryManifest` stay internal: `Verifier.start` already
+// resolves the binary for you, and an export is a promise that is cheap to make
+// now and breaking to take back.
+import { provisionBinary, resolveProvisionedBinary } from './binary.js';
 import { issueChallenge, inspectChallenge, applySingleUse, InMemoryNonceStore } from './challenge.js';
 
+// The supported surface.
 export {
   REASONS,
   classify,
-  VerifierService,
   provision,
-  manifest,
+  circuitsManifest,
+  provisionBinary,
   issueChallenge,
-  inspectChallenge,
-  applySingleUse,
   InMemoryNonceStore,
 };
+
+// -- Deprecated: still exported, scheduled for removal in 0.6.0 --------------
+//
+// These four were exported before 0.5.0 and documented nowhere, which is exactly
+// what LIBRARY_CONVENTIONS §1 (default OUT) exists to prevent. But `exports`
+// declares only "." -- there is no subpath escape hatch, so DELETING them would
+// leave anyone who imported them with no migration path at all, only a crash.
+// An export is a promise that is cheap to make and breaking to take back; the
+// answer to having made it carelessly is to withdraw it on notice, not to break
+// someone's build to tidy our own surface. They keep working, warn in an editor
+// via @deprecated, and go in 0.6.0.
+
+/** @deprecated Renamed to `circuitsManifest` (an export named `manifest` does not
+ * say whose). Removed in 0.6.0 -- switch the name, the value is identical. */
+export { circuitsManifest as manifest };
+
+/** @deprecated The raw subprocess driver. `Verifier` wraps it and is what you
+ * want; nothing in the docs has ever asked you to hold this. Removed in 0.6.0. */
+export { VerifierService };
+
+/** @deprecated Internal plumbing that `Verifier.check()` calls for you. Building
+ * replay defence out of it by hand is the failure `requireSingleUse` fails closed
+ * to prevent (PRD §9 D8) -- use `startGate`/`createGate`. Removed in 0.6.0. */
+export { inspectChallenge };
+
+/** @deprecated Internal plumbing that `Verifier.check()` calls for you. See
+ * `inspectChallenge`. Removed in 0.6.0. */
+export { applySingleUse };
 
 // The HTTP gate (M4 piece 3) is the "adopt without thinking" layer: replay-safe by
 // default. It lives in its own module because it imports `Verifier` from here.
@@ -115,10 +149,17 @@ export class Verifier {
    * Provision circuits first (see {@link provision}), then start one of these and
    * keep it: the circuit load takes 44-73s, so it is a boot cost, not a per-request one.
    *
-   * @param {import('./types.js').ServiceInit & {threshold?: number,
+   * @param {Omit<import('./types.js').ServiceInit, 'binary'> & {binary?: string,
+   *   threshold?: number,
    *   requireCurrentValidity?: boolean, toleranceMs?: number,
    *   requireSingleUse?: boolean, challengeSecret?: Buffer|Uint8Array|string,
    *   nonceStore?: import('./types.js').NonceStore, challengeTtlMs?: number}} opts
+   *   `binary` may be omitted after {@link provisionBinary}: the prebuilt,
+   *   sha256-pinned verifier is then found in the per-user cache and
+   *   RE-HASHED against the pin on every start -- a binary that no longer
+   *   matches is refused, never run (see `binary.js`). Pass `binary:` to use
+   *   your own build instead; the pin does not apply to a path you chose.
+   *
    *   `caCerts` IS THE TRUST BOUNDARY: a proof is accepted only if its issuer chains
    *   to one of those roots. Choose it deliberately -- it is the whole security
    *   decision. `vicalUrl` opts in to a network-fetched issuer trust list (ISO
@@ -155,7 +196,23 @@ export class Verifier {
     if (!Number.isInteger(threshold) || threshold < 1) {
       throw new TypeError(`threshold must be a positive integer, got ${opts?.threshold}`);
     }
-    const service = new VerifierService(opts);
+    // An empty/blank `binary` is a config error, not a choice -- it is what an
+    // unset `process.env.VERIFIER_BIN` looks like once something coerces it to a
+    // string. Falling through to the provisioned binary would quietly run
+    // something the adopter did not ask for; spawning '' would fail far away
+    // with a bare ENOENT. Say it here instead.
+    if (opts?.binary != null && (typeof opts.binary !== 'string' || opts.binary.trim() === '')) {
+      throw new TypeError(
+        `binary must be a non-empty path (got ${JSON.stringify(opts.binary)}); ` +
+          'omit it entirely to use the binary from provisionBinary()',
+      );
+    }
+    // No `binary:`? Use the provisioned prebuilt -- which resolveProvisionedBinary
+    // re-hashes against the manifest pin right now, at the last moment anyone can.
+    // It throws (with the fix in the message) if nothing intact is there; we never
+    // guess our way to some other executable.
+    const binary = opts?.binary ?? (await resolveProvisionedBinary());
+    const service = new VerifierService({ ...opts, binary });
     await service.start();
     return new Verifier(service, `age_over_${threshold}`, {
       requireCurrentValidity: opts?.requireCurrentValidity,

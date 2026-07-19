@@ -4,6 +4,180 @@ All notable changes to this project are documented here.
 Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) ·
 Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-07-20
+
+**Runtime change:** prebuilt verifier binaries (PRD §9 D11) — on linux-x64,
+`npm install zk8een` is now the whole install. Everywhere else the package stays
+bring-your-own-binary (D10) exactly as in `0.4.1`.
+
+### Deprecated — nothing removed, nothing breaks
+Four exports were named without ever appearing in `README.md` or
+`8een.context.md`, which is what LIBRARY_CONVENTIONS §1 (default OUT) exists to
+prevent. **They all still work.** They now carry `@deprecated`, so an editor flags
+them, and they go in `0.6.0`:
+
+- **`manifest` → `circuitsManifest`** — an export named `manifest` does not say
+  whose; the new name matches the `binaryManifest` it sits beside. Identical value,
+  so migrating is a rename.
+- **`VerifierService`** — the raw subprocess driver. `Verifier` wraps it and is what
+  adopters were always meant to hold.
+- **`inspectChallenge`, `applySingleUse`** — the internals `Verifier.check()` calls.
+  Hand-rolling replay defence out of them is precisely the failure
+  `requireSingleUse` fails closed to prevent (§9 D8). Use the gate.
+
+Deleting them outright was written and then reverted before release. `exports`
+declares only `"."`, so there is no subpath escape hatch — `import
+'zk8een/src/service.js'` throws `ERR_PACKAGE_PATH_NOT_EXPORTED` (verified). A hard
+removal would therefore have left anyone importing them with no migration path,
+only a crash. An export is a promise that is cheap to make and breaking to take
+back; the answer to having made one carelessly is to withdraw it **on notice**, not
+to break someone's build to tidy our own surface. Verified by typechecking and
+importing every old name from a real packed tarball as a `0.4.1`-era consumer would.
+
+### Added
+- **`provisionBinary(dir?, opts?)`** — fetches the prebuilt longfellow verifier
+  service for this platform (linux-x64 today) and refuses any byte that does not
+  match the sha256 pinned in `src/binary.manifest.js`, the same trust model as
+  the circuits: the download host (a GitHub release of this repo) is untrusted.
+  Idempotent, atomic; default target is the per-user cache
+  (`$XDG_CACHE_HOME`/`~/.cache` + `/zk8een`). `opts.platform` provisions for
+  another target (e.g. into a container image).
+- **`binary:` is now optional** on `Verifier.start` / `startGate`: when omitted,
+  the provisioned binary is found in the default dir and — because a binary,
+  unlike a circuit, cannot be integrity-checked by the service at load — is
+  **re-hashed against the pin on every start**, and checked for executability. A
+  binary that rots, is swapped, or has lost its execute bit is refused with the
+  fix named, never run. An explicit `binary:` path still wins, and the pin
+  deliberately does not apply to it (bring-your-own stays first-class); an empty
+  or non-string `binary:` is a loud config error, not a silent fallback.
+- **`.github/workflows/binaries.yml`** — the public build: clones upstream at the
+  pinned commit, applies the tracked patch series (`poc/patches/`), builds the
+  C++ core + cgo Go service on a clean runner, and **refuses to release a binary
+  the full integration suite has not passed on that runner** — asserting its
+  pass/fail counts and matching every skip against the one legitimate reason,
+  because green-by-skipping is this project's own recurring failure shape. Assets land on the `longfellow-bin-1` release with
+  checksums; every released byte is auditable back to the workflow run that built
+  it. No `postinstall` auto-download — provisioning stays an explicit step.
+
+### Fixed
+- **The published TypeScript types did not typecheck in an adopter's project**
+  (present since `0.1.0`, shipped in `0.4.1`). `types/circuits.d.ts` carried
+  `import manifest from './circuits.manifest.json'`, but no JSON is shipped into
+  `types/` — so any TS adopter running `tsc` got `TS2307` from inside
+  `node_modules/zk8een`. **The manifests are now plain ESM modules**
+  (`src/*.manifest.js`) rather than JSON imported through an import attribute,
+  per LIBRARY_CONVENTIONS §1 — so their types are generated from the data itself
+  and nothing unresolvable reaches the public `.d.ts`. Found by typechecking a
+  real `npm pack` + install, not by reading the source.
+- **CI now typechecks the published artifact, not just the source.** `tsc
+  --noEmit` never looks at the generated `.d.ts` the way an adopter resolves it,
+  which is exactly how the above shipped green for four releases. The push/PR
+  workflow now packs the tarball, installs it into a throwaway consumer project,
+  and typechecks the documented usage against it — verified non-vacuous by
+  reintroducing the JSON import and watching the step fail.
+- **The publish workflow now runs that same adopter check.** It was only in
+  `ci.yml`, which covers pushes to `main` — but `publish.yml` is
+  `workflow_dispatch` and can run from any ref, so the one path that actually puts
+  bytes on the registry was the one path missing the gate that catches the bug this
+  package already shipped. It also builds `types/` explicitly first: `types/` is
+  generated and gitignored, and `npm pack` does not run `prepublishOnly`. The
+  already-published check runs *before* that gate, so re-dispatching a publish for a
+  version already on the registry costs an `npm view` rather than a tarball build
+  and a TypeScript install.
+- **Alpine/musl is detected instead of failing obscurely.** `process.platform`-
+  `process.arch` reads `linux-x64` on Alpine exactly as on Debian, so the manifest
+  matched, 10 MB downloaded, and the glibc-linked binary then failed to spawn with
+  an error that named nothing and surfaced in `service.js`, far from the cause.
+  It is now diagnosed at the boundary with the fix named. Detection is stdlib-only
+  (no `glibcVersionRuntime` in the diagnostic report header) and **fails open** —
+  wrongly refusing to run on a working glibc box is the worse mistake. Watched
+  firing in a real `node:22-alpine` container, and watched staying silent on glibc.
+
+  The check applies **only when you did not name a target**. The platform key has
+  no libc dimension — Alpine and Debian are both `linux-x64` — so an explicit
+  `provisionBinary(dir, { platform })` is the only way to say "these bytes are for
+  somewhere else", and it is honoured: an Alpine CI runner can still bake a glibc
+  image. `Verifier.start` takes the implicit path, so the refusal still stands
+  between a musl host and a binary it cannot spawn. Both halves verified in a real
+  Alpine container.
+- **The "build it yourself" error pointed at a file that is not in the tarball.**
+  It cited `poc/M0-EVIDENCE.md`; `poc/` is not in `files`, so a macOS adopter
+  greps `node_modules` for it and finds nothing. It now gives the URL.
+- **An inherited key was accepted as a platform.** `manifest.binaries[platform]`
+  is a bare lookup, so `provisionBinary(dir, { platform: '__proto__' })` — or
+  `constructor`, `toString` — inherited a truthy value from `Object.prototype`,
+  sailed past the "no prebuilt" guard, and became a fetch of
+  `longfellow-verifier-undefined` against an undefined pin. **The integrity
+  boundary held**: the length check fails closed on `undefined`, so unpinned bytes
+  were still refused (verified by serving hostile bytes through that path). The
+  defect was the diagnosis, not the trust model. Now an `Object.hasOwn` guard, the
+  same way `circuits.js` already validates its ids.
+
+### Internal
+- **`src/pinned.js`** — the fetch-and-verify sequence (reachability, advertised
+  size before the body is read, actual size, sha256, atomic write-then-rename)
+  existed twice, once for circuits and once for the binary, drifting
+  independently. It is the package's integrity boundary, so it now lives in one
+  place that can be audited once. Verified behaviour-preserving: every refusal
+  message on both paths is byte-identical to before.
+- **Only `provisionBinary` is public** of the four functions the binary work
+  added (LIBRARY_CONVENTIONS §1 — default OUT on new API surface). `Verifier.start`
+  resolves the binary itself, so the rest stay internal rather than becoming a
+  promise that is breaking to take back.
+
+### Docs
+- **The README stated something false about this package's own registry entry** —
+  that npm held "an inert 0.0.0 placeholder", withholding a version badge until a
+  version shipped that could verify a proof. `0.4.1` shipped on 2026-07-17 and does
+  verify proofs. For a project that keeps a public retraction ledger, shipping a
+  wrong claim about itself inside the tarball is the worst kind. Fixed, and the
+  badge it was withholding is now there.
+- **PRD §10 still carried the pre-D11 paragraph** ("prebuilt platform binaries
+  remain open work") and cross-referenced a `README §Status` section that has never
+  existed. Superseded in place; the dangling reference is dropped.
+- **PRD §7.2 (30-minute adoption cost) amended — it was never run.** The criterion
+  says "timed with a real run before M4 closes, **not asserted**"; M4 closed on an
+  adjacent result (the README's Express snippet against real Express 5.2.1) filed
+  under its heading, which made it look discharged. Now recorded as not met, with
+  the reason it cannot be run in-house — everyone here has already read the README,
+  so any number would measure recall, not adoption cost — and deferred to the first
+  external adopter.
+- **"Mathematically unlinkable" is now attributed.** PRD §7.3 splits *tested by us*
+  (a byte probe with a measured ≈11-byte detection floor) from *cited, not claimed*
+  (the scheme's own security analysis). The README's headline asserted it flat, in a
+  paragraph where every other claim carries a citation.
+- **Three adoption facts moved out of the footnotes and into Quick start**: `os`/`cpu`
+  are deliberately unrestricted (BYO is first-class everywhere, so blocking installs
+  would be wrong); downloads are integrity-pinned but not mirrored, so a dead origin
+  has no fallback; and no proof from a real phone has ever reached this verifier —
+  the on-phone `ZkSystemId` stays unpinned, and if it does not end in a bare circuit
+  hash the result is `circuit_unavailable`, never a wrong answer.
+- **`GATE_REASONS` and `circuitsManifest` documented** in `8een.context.md` — they
+  were exported and explained nowhere. The `rate_limited` row says **rate, not
+  concurrency** (60 requests per 60 s per client key, `rateLimit.limit`/`windowMs`)
+  — measured by driving the gate with strictly sequential requests, never more than
+  one in flight, and watching the 429 arrive. Routes are written against
+  `{basePath}` rather than a hardcoded `/8een`, since it is configurable, and
+  `challenge_disabled` names both ways it fires (`startGate({requireSingleUse:
+  false})` and `createGate({allowReplay: true})`).
+- **SPDX identifiers** (`Apache-2.0`) on all eleven `src/*.js`; there were none, and
+  this is a security component people vendor file-by-file.
+
+### Dev-only
+- CHANGELOG's bottom link-reference table completed (0.2.0–0.4.1 were missing).
+- `publish.yml`'s header still said "copy to `.github/workflows/publish.yml`" — a
+  leftover from the template it was lifted from; it *is* that file.
+- `ci.yml` coverage comment corrected: a clean runner *can* run the integration
+  suite now — `binaries.yml` does exactly that on every build.
+- `binaries.yml` hardened after a review found its proof gate did not gate:
+  under Actions' default `bash -e {0}` the suite's exit status was `tee`'s, so a
+  **failing** integration suite would have released its binary. Now `pipefail`
+  plus asserted pass/fail/skip counts, with skips matched against the one
+  legitimate reason rather than tolerated by count; the release job refuses to
+  overwrite a published asset whose bytes differ from the manifest pin; and the
+  upstream commit, patch list, and release tag are read from
+  `src/binary.manifest.js` instead of being second copies that can drift.
+
 ## [0.4.1] — 2026-07-16
 
 **Docs-only:** the dossier (M5). No runtime change.
@@ -360,6 +534,11 @@ verify"*. It never says *"you are underage"*.
   clock-independent or runs on the real clock. M2's test-CA removes the
   scaffolding.
 
+[0.5.0]: https://github.com/hamr0/8een/releases/tag/v0.5.0
+[0.4.1]: https://github.com/hamr0/8een/releases/tag/v0.4.1
+[0.4.0]: https://github.com/hamr0/8een/releases/tag/v0.4.0
+[0.3.0]: https://github.com/hamr0/8een/releases/tag/v0.3.0
+[0.2.0]: https://github.com/hamr0/8een/releases/tag/v0.2.0
 [0.1.3]: https://github.com/hamr0/8een/releases/tag/v0.1.3
 [0.1.2]: https://github.com/hamr0/8een/releases/tag/v0.1.2
 [0.1.1]: https://github.com/hamr0/8een/releases/tag/v0.1.1

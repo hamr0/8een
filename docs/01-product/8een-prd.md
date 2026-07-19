@@ -196,9 +196,28 @@ Every line above is an executable test by M2 — the negatives especially,
 since "rejects others" is the half that usually goes untested.
 
 ### 7.2 Secondary — adoption cost
-A developer integrates the gate into an existing vanilla-Node/Express site in
+~~A developer integrates the gate into an existing vanilla-Node/Express site in
 **under 30 minutes using only the README**. Timed with a real run before M4
-closes, not asserted.
+closes, not asserted.~~
+
+**AMENDED 2026-07-19 — not met as written; recording what was actually done.**
+M4 closed without this criterion being executed. What `docs/02-evidence/M4-EVIDENCE.md`
+records under this heading is a *different, narrower* check: the README's Express
+snippet was run against real Express 5.2.1 — `app.use(gate.express())` serves the two
+gate routes, the site's own routes still fall through cleanly via `next()`, and a
+replay is refused. That is a real result (copy-paste completeness), but it is not a
+timed integration, and filing it under this heading made the criterion look
+discharged when it was not.
+
+**Why it stays open rather than being run now:** the criterion requires a developer
+who has *not* read the README before. Everyone who could run it here wrote it, so any
+number produced in-house would measure recall, not adoption cost. It is therefore
+**deferred to the first external adopter**, whose timing we will record verbatim
+(including if it is bad).
+
+*The rule this cost us: a criterion that says "not asserted" cannot be discharged by
+an adjacent result filed under its heading. It is the §7.3 lesson — "a guard you have
+not watched fire is not a guard" — applied to an acceptance criterion.*
 
 ### 7.1a Credential expiry — CLOSED by M4 piece 1 (2026-07-15)
 The §7.1 rows were all executable and passing as of M2 **except that none exercised an
@@ -345,6 +364,7 @@ nonce, or a session we did not issue are the exceptions in the other direction:
 | D8 | **Replay defence is opt-in and delegates its state** (`requireSingleUse`, default **off**), confirmed 2026-07-16. Unlike currency, single-use cannot default on: it needs adopter infrastructure (a shared HMAC secret, a shared spent-nonce store, and issuing challenges) it cannot invent, so a default-on would be *broken* by default. It fails **closed when on** — enabling it without a `challengeSecret` **and** a `nonceStore` throws at construction; 8een never falls back to a per-process store that only looks replay-safe. The spent-nonce set is the adopter's (Redis or equivalent), so NO-GO #7 holds — 8een stores nothing. This closes §7.4a's "the gate must issue a per-session nonce and retire it after one use." |
 | D9 | **The dossier ships as a GitHub-hosted page with a recorded demo, not a live instance**, confirmed 2026-07-16. This amends §6 M5's "live demo embedded": the page (GitHub Pages, `docs/index.html`, zero JS / zero external requests) embeds a recorded, unedited run of `demo/` pinned to its commit, beside reproduce-it-yourself instructions — no VPS, no public endpoint. Consequences accepted and written into the page's honesty ledger: the on-phone `ZkSystemId` gap (M3) stays open — with no live endpoint, no stranger's phone can close it — and the "working demo" claim rests on the recording plus the public repo, not a clickable instance. D1's hosted-demo permission stands unused. |
 | D10 | **`zk8een` publishes to npm as bring-your-own-binary**, confirmed 2026-07-17 (owner chose it over holding for prebuilt binaries). This amends §10's "nothing real is published until the binary problem is solved": `0.4.1` ships the verify module, gate, and types with the BYO requirement stated prominently in README §Status and `8een.context.md`. `provision()` covers circuits; the binary build stays the adopter's documented step. Prebuilt platform binaries (or a checksummed postinstall fetch) remain the intended end state. The installed artifact is validated against a locally built binary before the publish is called done. |
+| D11 | **Prebuilt platform binaries ship as GitHub release assets fetched by an explicit `provisionBinary()`**, confirmed 2026-07-18 (owner chose: **linux-x64 first**, the one platform we can build *and* integration-test on a clean runner; **auto-default** — `Verifier.start`/`startGate` find the provisioned binary when `binary:` is omitted; **GitHub release assets** over npm platform packages, which would put real dependencies into a zero-dependency package, NO-GO #9). A public workflow (`binaries.yml`) builds the verifier from the pinned upstream commit plus the tracked patch series on a clean runner, and refuses to publish a binary the full integration suite has not passed on that runner (skips asserted to be zero — green-by-skipping is the project's own recurring failure shape). The package pins the released asset's sha256 and size in `src/binary.manifest.js`; `provisionBinary()` fetches and verifies against the pin, so the release host is untrusted; and the auto-default path is **re-hashed on every start**, because a binary — unlike a circuit — cannot be integrity-checked by the service at load time. No `postinstall` auto-download: provisioning stays an explicit adopter step. Bring-your-own stays first-class — pass `binary:` and the pin deliberately does not apply. This closes D10's "prebuilt platform binaries remain the intended end state" for linux-x64; other platforms stay open work. |
 
 ## 10. Naming & publishing
 
@@ -359,11 +379,16 @@ nonce, or a session we did not issue are the exceptions in the other direction:
   deprecated placeholder that exists only because npm requires a package to exist
   before a trusted publisher can be attached to it. ~~**Nothing real is published
   until the longfellow binary problem is solved**~~ **Amended by D10 (2026-07-17):
-  published as bring-your-own-binary.** The package states plainly (README §Status,
+  published as bring-your-own-binary.** ~~The package states plainly (README §Status,
   `8een.context.md` §Constraints) that `npm install` alone verifies nothing and the
   adopter builds the longfellow binary from the documented steps; prebuilt platform
-  binaries remain open work. The original concern stands otherwise: a correct
-  publish pipeline is not clearance to call it turnkey.
+  binaries remain open work.~~ **Superseded by D11 (2026-07-18):** on linux-x64
+  (glibc) `npm install zk8een` + `provisionBinary()` is the whole install, against a
+  sha256 pinned in the package. Every other platform is still bring-your-own-binary,
+  and `8een.context.md` §Constraints says so — as does the README, which has no
+  `§Status` section; that cross-reference was always dangling and is now dropped.
+  The original concern stands otherwise: a correct publish pipeline is not clearance
+  to call it turnkey, and "turnkey" means linux-x64 and nothing else yet.
 - **License:** Apache-2.0 (matches longfellow-zk).
 - **Repo:** public on GitHub under `hamr0` from day one. **No key material
   ever enters the tree** — AGENT_RULES' "never write keys into the tree" has
