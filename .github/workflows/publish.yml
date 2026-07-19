@@ -70,13 +70,31 @@ jobs:
         run: npm run typecheck --if-present
       - name: Test
         run: npm test --if-present
+      - name: Skip if this version is already on npm
+        # BEFORE the pack-and-install gate below, not after: re-dispatching a publish
+        # for a version already on the registry is the idempotency case this step
+        # exists for, and it should cost a `npm view`, not a tarball build plus a
+        # TypeScript install. Everything downstream is gated on its output.
+        id: check
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          PUBLISHED=$(npm view "$NAME@$VERSION" version 2>/dev/null || true)
+          if [ -n "$PUBLISHED" ]; then
+            echo "::notice::$NAME@$VERSION already published — skipping"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Build types
         # `types/` is generated and gitignored. `prepublishOnly` builds it for the
         # real publish below, but `npm pack` does NOT run `prepublishOnly` -- so the
         # adopter check that follows would pack a tarball with no .d.ts at all and
         # fail on an artefact the publish would never actually produce.
+        if: steps.check.outputs.skip == 'false'
         run: npm run build:types
       - name: Types are usable BY AN ADOPTER, not just internally
+        if: steps.check.outputs.skip == 'false'
         # The same gate `ci.yml` runs, and it belongs HERE most of all: this is the
         # only workflow that puts bytes on the registry. `tsc --noEmit` above checks
         # the SOURCE; it cannot see the generated .d.ts resolved from inside
@@ -114,18 +132,6 @@ jobs:
           TS
           npm install --no-audit --no-fund /tmp/pkg/*.tgz typescript @types/node
           ./node_modules/.bin/tsc
-      - name: Skip if this version is already on npm
-        id: check
-        run: |
-          NAME=$(node -p "require('./package.json').name")
-          VERSION=$(node -p "require('./package.json').version")
-          PUBLISHED=$(npm view "$NAME@$VERSION" version 2>/dev/null || true)
-          if [ -n "$PUBLISHED" ]; then
-            echo "::notice::$NAME@$VERSION already published — skipping"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
       - name: Publish
         if: steps.check.outputs.skip == 'false'
         run: |

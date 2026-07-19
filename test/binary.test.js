@@ -106,6 +106,65 @@ test('a platform we have no prebuilt for is refused with the way out named', asy
   });
 });
 
+/**
+ * musl detection asks about the HOST's libc, but `opts.platform` names the TARGET --
+ * and the two are independent (baking a glibc container image from an Alpine CI
+ * runner is the documented use of that override). A guard that conflates them
+ * refuses a download that would have been correct.
+ *
+ * Simulating musl means removing `glibcVersionRuntime` from the diagnostic report,
+ * which is precisely what Node reports on Alpine -- verified against a real
+ * `node:22-alpine` container, where `process.platform`-`process.arch` also reads
+ * `linux-x64`, which is the whole trap.
+ */
+async function asMuslHost(fn) {
+  const real = process.report.getReport.bind(process.report);
+  process.report.getReport = () => {
+    const r = real();
+    delete r.header.glibcVersionRuntime;
+    return r;
+  };
+  try {
+    return await fn();
+  } finally {
+    process.report.getReport = real;
+  }
+}
+
+test('musl refuses an implicit provision but never an explicitly targeted one', {
+  skip: manifest.binaries[HERE] ? false : 'needs a pinned platform for this host',
+}, async () => {
+  // Non-vacuity: on a simulated musl host, provisioning FOR THIS PROCESS is refused.
+  await asMuslHost(() =>
+    assert.rejects(provisionBinary(tmp('bin-musl-host')), (err) => {
+      assert.match(err.message, /musl system \(Alpine\)/);
+      assert.match(err.message, /binary:/, 'must name the BYO escape hatch');
+      assert.match(err.message, /platform:/, 'must name the cross-provision escape hatch');
+      return true;
+    }),
+  );
+
+  // The regression. Both sides of a cross-provision are `linux-x64` -- the platform
+  // key has no libc dimension -- so an explicit `platform:` is the ONLY way to say
+  // "these bytes are for elsewhere". It must get past the musl gate.
+  //
+  // A fetchImpl that cannot connect proves we reached the download without pulling
+  // 10 MB: reaching "cannot reach" means the musl refusal did not fire.
+  await asMuslHost(() =>
+    assert.rejects(
+      provisionBinary(tmp('bin-musl-x'), {
+        platform: HERE,
+        fetchImpl: () => Promise.reject(new Error('offline')),
+      }),
+      (err) => {
+        assert.doesNotMatch(err.message, /musl/, 'an explicit target is not about this host');
+        assert.match(err.message, /cannot reach/, 'should have proceeded to the fetch');
+        return true;
+      },
+    ),
+  );
+});
+
 test('resolveProvisionedBinary refuses an empty or mismatched dir, naming the fix', async () => {
   const dir = tmp('bin-empty');
   await assert.rejects(resolveProvisionedBinary(dir, PINNED), /Run provisionBinary\(\)/);

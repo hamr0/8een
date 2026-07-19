@@ -82,11 +82,20 @@ function isMuslLinux() {
   }
 }
 
+/** The machine we are running ON -- not necessarily the one we are provisioning FOR. */
+function hostPlatform() {
+  return `${process.platform}-${process.arch}`;
+}
+
 /**
  * @param {string} platform e.g. `linux-x64`
+ * @param {{explicitTarget?: boolean}} [opts]
+ *   `explicitTarget` = the caller NAMED a platform, so they are provisioning
+ *   deliberately (baking an image, populating a cache for another machine) rather
+ *   than for the process they are running in.
  * @returns {{asset: string, sha256: string, bytes: number}}
  */
-function entryFor(platform) {
+function entryFor(platform, { explicitTarget = false } = {}) {
   const entry = manifest.binaries[platform];
   if (!entry) {
     const have = Object.keys(manifest.binaries).join(', ');
@@ -96,12 +105,20 @@ function entryFor(platform) {
         `and pass its path as \`binary:\`.`,
     );
   }
-  if (isMuslLinux()) {
+  // The musl check asks about THIS process's libc, so it may only speak to a binary
+  // THIS process is going to run. The platform key carries no libc dimension --
+  // Alpine and Debian are both `linux-x64` -- so an explicit `platform:` is the only
+  // signal that the bytes are destined elsewhere (an Alpine CI runner baking a glibc
+  // image is the documented use). Refusing that would be the same host-vs-target
+  // confusion this check exists to catch, pointed the other way.
+  if (!explicitTarget && isMuslLinux()) {
     throw new Error(
       `the prebuilt ${platform} verifier binary is glibc-linked and this looks like ` +
         `a musl system (Alpine): it would download and then fail to spawn. Either use ` +
         `a glibc image (e.g. node:22-bookworm-slim) or build the binary against musl ` +
-        `yourself -- ${BUILD_IT_YOURSELF} -- and pass its path as \`binary:\`.`,
+        `yourself -- ${BUILD_IT_YOURSELF} -- and pass its path as \`binary:\`. To ` +
+        `provision FOR somewhere else from here, name the target: ` +
+        `provisionBinary(dir, { platform: '${platform}' }).`,
     );
   }
   return entry;
@@ -121,8 +138,8 @@ function entryFor(platform) {
  * @returns {Promise<{path: string, action: 'present'|'fetched'}>}
  */
 export async function provisionBinary(dir = defaultBinaryDir(), opts = {}) {
-  const { platform = `${process.platform}-${process.arch}`, onProgress = () => {}, fetchImpl = fetch } = opts;
-  const entry = entryFor(platform);
+  const { platform = hostPlatform(), onProgress = () => {}, fetchImpl = fetch } = opts;
+  const entry = entryFor(platform, { explicitTarget: opts.platform != null });
   await mkdir(dir, { recursive: true });
   const path = cachedPath(dir, entry);
 
@@ -151,8 +168,11 @@ export async function provisionBinary(dir = defaultBinaryDir(), opts = {}) {
  * @returns {Promise<string>}
  */
 export async function resolveProvisionedBinary(dir = defaultBinaryDir(), opts = {}) {
-  const { platform = `${process.platform}-${process.arch}` } = opts;
-  const entry = entryFor(platform);
+  const { platform = hostPlatform() } = opts;
+  // Same rule as provisionBinary. The path that matters for safety is the one
+  // `Verifier.start` takes -- no arguments, so `explicitTarget` is false and the
+  // musl refusal still stands between an Alpine host and a binary it cannot spawn.
+  const entry = entryFor(platform, { explicitTarget: opts.platform != null });
   const path = cachedPath(dir, entry);
   if (!(await isIntact(path, entry.sha256))) {
     throw new Error(

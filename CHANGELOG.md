@@ -77,7 +77,10 @@ deliberately, with a documented contract, instead of by accident.
   `workflow_dispatch` and can run from any ref, so the one path that actually puts
   bytes on the registry was the one path missing the gate that catches the bug this
   package already shipped. It also builds `types/` explicitly first: `types/` is
-  generated and gitignored, and `npm pack` does not run `prepublishOnly`.
+  generated and gitignored, and `npm pack` does not run `prepublishOnly`. The
+  already-published check runs *before* that gate, so re-dispatching a publish for a
+  version already on the registry costs an `npm view` rather than a tarball build
+  and a TypeScript install.
 - **Alpine/musl is detected instead of failing obscurely.** `process.platform`-
   `process.arch` reads `linux-x64` on Alpine exactly as on Debian, so the manifest
   matched, 10 MB downloaded, and the glibc-linked binary then failed to spawn with
@@ -86,6 +89,14 @@ deliberately, with a documented contract, instead of by accident.
   (no `glibcVersionRuntime` in the diagnostic report header) and **fails open** —
   wrongly refusing to run on a working glibc box is the worse mistake. Watched
   firing in a real `node:22-alpine` container, and watched staying silent on glibc.
+
+  The check applies **only when you did not name a target**. The platform key has
+  no libc dimension — Alpine and Debian are both `linux-x64` — so an explicit
+  `provisionBinary(dir, { platform })` is the only way to say "these bytes are for
+  somewhere else", and it is honoured: an Alpine CI runner can still bake a glibc
+  image. `Verifier.start` takes the implicit path, so the refusal still stands
+  between a musl host and a binary it cannot spawn. Both halves verified in a real
+  Alpine container.
 - **The "build it yourself" error pointed at a file that is not in the tarball.**
   It cited `poc/M0-EVIDENCE.md`; `poc/` is not in `files`, so a macOS adopter
   greps `node_modules` for it and finds nothing. It now gives the URL.
@@ -130,7 +141,13 @@ deliberately, with a documented contract, instead of by accident.
   the on-phone `ZkSystemId` stays unpinned, and if it does not end in a bare circuit
   hash the result is `circuit_unavailable`, never a wrong answer.
 - **`GATE_REASONS` and `circuitsManifest` documented** in `8een.context.md` — they
-  were exported and explained nowhere.
+  were exported and explained nowhere. The `rate_limited` row says **rate, not
+  concurrency** (60 requests per 60 s per client key, `rateLimit.limit`/`windowMs`)
+  — measured by driving the gate with strictly sequential requests, never more than
+  one in flight, and watching the 429 arrive. Routes are written against
+  `{basePath}` rather than a hardcoded `/8een`, since it is configurable, and
+  `challenge_disabled` names both ways it fires (`startGate({requireSingleUse:
+  false})` and `createGate({allowReplay: true})`).
 - **SPDX identifiers** (`Apache-2.0`) on all eleven `src/*.js`; there were none, and
   this is a security component people vendor file-by-file.
 

@@ -217,15 +217,19 @@ The closed set of `reason` values the **HTTP gate** returns for transport-level
 refusals — the ones that never reach the verifier at all. Verdict reasons above
 come back in the same `reason` field, so branch on both from one place.
 
+Routes below are written against `{basePath}`, which defaults to `/8een` and is
+configurable — a gate mounted at `/verify-age` answers `404 not_found` on
+`/8een/challenge`.
+
 | HTTP | `reason` | Means |
 |---|---|---|
-| 400 | `bad_request` | Body is not the `{transcript, deviceResponse}` shape. |
-| 404 | `not_found` | No such gate route. |
-| 404 | `challenge_disabled` | `GET /8een/challenge` while running with `requireSingleUse: false`. |
+| 400 | `bad_request` | Body is not the `{transcript, deviceResponse}` shape (or the URL is unparseable). |
+| 404 | `not_found` | No such gate route. Standalone handler only — under `express()` an unmatched path calls `next()` instead. |
+| 404 | `challenge_disabled` | `GET {basePath}/challenge` on a replay-open gate — `startGate({requireSingleUse: false})`, or `createGate({allowReplay: true})`. No nonces are issued, so the route is off. |
 | 405 | `method_not_allowed` | Right route, wrong verb. |
-| 408 | `request_timeout` | The body arrived too slowly. |
-| 413 | `payload_too_large` | The body exceeded the size bound. |
-| 429 | `rate_limited` | Too many in-flight requests. |
+| 408 | `request_timeout` | The body arrived too slowly (`maxBodyReadMs`). |
+| 413 | `payload_too_large` | The body exceeded `maxBodyBytes`. |
+| 429 | `rate_limited` | **Rate**, not concurrency: more than `rateLimit.limit` requests from one client key within `rateLimit.windowMs` (default **60 per 60 s**). A strictly sequential client trips this. Per-process and best-effort — front your own limiter across replicas, or `rateLimit: false`. |
 | 500 | `internal_error` | The gate itself failed. Never leaks detail to the client. |
 
 ### `classify(raw, opts?) → Verdict`
