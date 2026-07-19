@@ -17,33 +17,14 @@
  * refused, never silently run.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
-import { access, chmod, mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
+import { access, chmod, mkdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import rawManifest from './binary.manifest.json' with { type: 'json' };
-
-/**
- * The manifest's shape is declared rather than inferred from the JSON, and that
- * is deliberate: inferring it makes `tsc` emit `import ... from
- * './binary.manifest.json'` into the PUBLIC .d.ts, which then fails in every
- * adopter's typecheck -- the JSON is not shipped into `types/`, and resolving it
- * would demand `resolveJsonModule` in their tsconfig besides. Measured against a
- * real `npm pack` + install: two TS2307s from inside node_modules. Keep the
- * annotation, or the types stop being installable.
- *
- * @typedef {{asset: string, sha256: string, bytes: number}} BinaryEntry
- * @typedef {{upstream: string, commit: string, patches: string[], release: string,
- *   binaries: Record<string, BinaryEntry>}} BinaryManifest
- */
-
-/** @type {BinaryManifest} */
-const manifest = rawManifest;
+import manifest from './binary.manifest.js';
+import { fetchPinned, isIntact } from './pinned.js';
 
 export { manifest as binaryManifest };
-
-const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
 const assetUrl = (asset) =>
   `https://github.com/hamr0/8een/releases/download/${manifest.release}/${asset}`;
@@ -154,14 +135,6 @@ function cachedPath(dir, entry) {
   return join(dir, `${entry.asset}-${manifest.release}`);
 }
 
-async function isIntact(path, expected) {
-  try {
-    return sha256(await readFile(path)) === expected;
-  } catch {
-    return false; // absent, unreadable -- either way, not a binary we will run
-  }
-}
-
 async function isExecutable(path) {
   try {
     await access(path, constants.X_OK);
@@ -172,58 +145,18 @@ async function isExecutable(path) {
 }
 
 async function fetchBinary(entry, path, fetchImpl) {
-  const url = assetUrl(entry.asset);
-
-  let res;
-  try {
-    res = await fetchImpl(url, { signal: AbortSignal.timeout(120_000) });
-  } catch (err) {
-    throw new Error(`binary ${entry.asset}: cannot reach ${url}: ${err.message}`);
-  }
-  if (!res.ok) {
-    throw new Error(`binary ${entry.asset}: ${url} returned HTTP ${res.status}`);
-  }
-
-  // Refuse an oversized body BEFORE reading it into memory (same availability
-  // argument as circuits.js: the sha256 catches bad bytes, but only after they
-  // fit in RAM).
-  const advertised = Number(res.headers?.get?.('content-length'));
-  if (Number.isFinite(advertised) && advertised > entry.bytes) {
-    throw new Error(
-      `binary ${entry.asset}: ${url} advertises ${advertised} bytes, ` +
-        `expected ${entry.bytes}. Refusing to download it.`,
-    );
-  }
-
-  const bytes = Buffer.from(await res.arrayBuffer());
-
-  if (bytes.length !== entry.bytes) {
-    throw new Error(
-      `binary ${entry.asset}: expected ${entry.bytes} bytes, got ${bytes.length}. Refusing.`,
-    );
-  }
-  const got = sha256(bytes);
-  if (got !== entry.sha256) {
-    throw new Error(
-      `binary ${entry.asset}: SHA256 MISMATCH.\n` +
-        `  expected ${entry.sha256}\n  received ${got}\n` +
-        `These are not the bytes pinned from release ${manifest.release}. Refusing to install them.`,
-    );
-  }
-
-  // Write beside the target then rename, exactly like circuits.js: a crash
-  // mid-write must never leave a truncated executable lying at the real path.
-  const partial = `${path}.part-${randomUUID()}`;
-  try {
-    await writeFile(partial, bytes, { flag: 'wx', mode: 0o755 });
-    // writeFile's `mode` is masked by the process umask -- measured: under
-    // `umask 0111` the file lands 0644 and the binary we just verified is not
-    // executable. chmod is not masked, so assert the mode explicitly rather
-    // than leaving a hash-perfect binary that cannot be spawned.
-    await chmod(partial, 0o755);
-    await rename(partial, path);
-  } catch (err) {
-    await unlink(partial).catch(() => {});
-    throw err;
-  }
+  await fetchPinned(
+    {
+      url: assetUrl(entry.asset),
+      label: `binary ${entry.asset}`,
+      bytes: entry.bytes,
+      sha256: entry.sha256,
+      path,
+      origin: `from release ${manifest.release}`,
+      timeoutMs: 120_000,
+      // The one thing a circuit does not need: this file gets executed.
+      mode: 0o755,
+    },
+    fetchImpl,
+  );
 }

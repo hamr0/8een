@@ -23,7 +23,12 @@
 import { VerifierService } from './service.js';
 import { classify, REASONS } from './verdict.js';
 import { provision, manifest } from './circuits.js';
-import { provisionBinary, resolveProvisionedBinary, defaultBinaryDir, binaryManifest } from './binary.js';
+// Only `provisionBinary` is public (LIBRARY_CONVENTIONS §1 -- default OUT on new
+// API surface; the burden of proof is on adding). `resolveProvisionedBinary`,
+// `defaultBinaryDir` and `binaryManifest` stay internal: `Verifier.start` already
+// resolves the binary for you, and an export is a promise that is cheap to make
+// now and breaking to take back.
+import { provisionBinary, resolveProvisionedBinary } from './binary.js';
 import { issueChallenge, inspectChallenge, applySingleUse, InMemoryNonceStore } from './challenge.js';
 
 export {
@@ -33,9 +38,6 @@ export {
   provision,
   manifest,
   provisionBinary,
-  resolveProvisionedBinary,
-  defaultBinaryDir,
-  binaryManifest,
   issueChallenge,
   inspectChallenge,
   applySingleUse,
@@ -126,7 +128,7 @@ export class Verifier {
    *   requireSingleUse?: boolean, challengeSecret?: Buffer|Uint8Array|string,
    *   nonceStore?: import('./types.js').NonceStore, challengeTtlMs?: number}} opts
    *   `binary` may be omitted after {@link provisionBinary}: the prebuilt,
-   *   sha256-pinned verifier is then found in {@link defaultBinaryDir} and
+   *   sha256-pinned verifier is then found in the per-user cache and
    *   RE-HASHED against the pin on every start -- a binary that no longer
    *   matches is refused, never run (see `binary.js`). Pass `binary:` to use
    *   your own build instead; the pin does not apply to a path you chose.

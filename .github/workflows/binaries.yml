@@ -40,21 +40,27 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Read the build baseline from src/binary.manifest.json
+      - name: Read the build baseline from src/binary.manifest.js
         # SINGLE SOURCE OF TRUTH. The manifest is what the shipped package
         # verifies against, so the build must take its commit, patch list, and
         # release tag from there rather than keeping a second copy here that can
         # drift into building something the package will refuse.
         id: manifest
+        # Dynamic import, not require(): the manifest is a plain ESM module
+        # (LIBRARY_CONVENTIONS §1 — no JSON imports leaking into the public
+        # .d.ts), and this package is "type": "module", so require() would throw.
         run: |
-          M=src/binary.manifest.json
+          read_manifest() {
+            node --input-type=module -e \
+              "const m = (await import('./src/binary.manifest.js')).default; $1"
+          }
           {
-            echo "commit=$(node -p "require('./$M').commit")"
-            echo "release=$(node -p "require('./$M').release")"
-            echo "sha256=$(node -p "require('./$M').binaries['linux-x64'].sha256")"
+            echo "commit=$(read_manifest 'console.log(m.commit)')"
+            echo "release=$(read_manifest 'console.log(m.release)')"
+            echo "sha256=$(read_manifest "console.log(m.binaries['linux-x64'].sha256)")"
           } >> "$GITHUB_OUTPUT"
           echo "patches<<EOF" >> "$GITHUB_OUTPUT"
-          node -p "require('./$M').patches.join('\n')" >> "$GITHUB_OUTPUT"
+          read_manifest 'console.log(m.patches.join("\n"))' >> "$GITHUB_OUTPUT"
           echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Install build dependencies (upstream Dockerfile list)
@@ -161,7 +167,7 @@ jobs:
           if-no-files-found: error
 
   # Attaches the proven binary to the longfellow-bin-<N> release that
-  # src/binary.manifest.json points provisionBinary() at. Runs on manual
+  # src/binary.manifest.js points provisionBinary() at. Runs on manual
   # dispatch, or — if a future spike re-adds a temporary push trigger (dispatch
   # cannot see a workflow that is not on main yet; this one ran its first builds
   # that way) — on an explicit [publish-binaries] commit message, so a plain
@@ -205,12 +211,12 @@ jobs:
           if [ "$BUILT" = "$PINNED_SHA256" ]; then
             echo "✅ built bytes match the manifest pin"
           elif ! printf '%s' "$PINNED_SHA256" | grep -qE '^[0-9a-f]{64}$'; then
-            echo "::notice::manifest pin for $RELEASE_TAG is a placeholder — bootstrapping; pin $BUILT into src/binary.manifest.json"
+            echo "::notice::manifest pin for $RELEASE_TAG is a placeholder — bootstrapping; pin $BUILT into src/binary.manifest.js"
           elif gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            echo "::error::$RELEASE_TAG is already published and the build differs from its pinned sha256. Overwriting it would break provisionBinary() for every zk8een already on npm. Cut a new longfellow-bin-N tag and update src/binary.manifest.json in the same commit."
+            echo "::error::$RELEASE_TAG is already published and the build differs from its pinned sha256. Overwriting it would break provisionBinary() for every zk8een already on npm. Cut a new longfellow-bin-N tag and update src/binary.manifest.js in the same commit."
             exit 1
           else
-            echo "::notice::$RELEASE_TAG not yet published; pin $BUILT into src/binary.manifest.json"
+            echo "::notice::$RELEASE_TAG not yet published; pin $BUILT into src/binary.manifest.js"
           fi
 
       - name: Create the release if it does not exist, then attach the assets

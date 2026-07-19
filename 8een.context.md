@@ -118,13 +118,12 @@ other. Treat the path as ours: read it from the return value, do not construct i
 - `opts.onProgress` — `({asset, action}) => void`
 - `opts.fetchImpl` — inject a `fetch` (used by the test suite; no network needed)
 
-### `resolveProvisionedBinary(dir?, opts?) → Promise<string>`
-
-The path `Verifier.start` uses when `binary:` is omitted — **re-hashed against the
-pin on every call**, and checked for executability. A binary that rots, is
-swapped, or has lost its execute bit is refused with an error naming the fix,
-never run: unlike a circuit, a binary cannot be integrity-checked by the service
-at load time, so this is the last moment anyone can check it.
+**What happens at start.** When `binary:` is omitted, the provisioned binary is
+**re-hashed against the pin on every start**, and checked for executability: one
+that rots, is swapped, or has lost its execute bit is refused with an error
+naming the fix, never run. Unlike a circuit, a binary cannot be
+integrity-checked by the service at load time, so start is the last moment
+anyone can check it. This is automatic — there is no call for you to make.
 
 ### `Verifier.start(opts) → Promise<Verifier>`
 

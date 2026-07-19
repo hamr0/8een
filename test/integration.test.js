@@ -44,7 +44,10 @@ import { readFileSync, existsSync, mkdtempSync, writeFileSync, readdirSync } fro
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Verifier, VerifierService, REASONS, issueChallenge, InMemoryNonceStore, createGate, resolveProvisionedBinary } from '../src/index.js';
+import { Verifier, VerifierService, REASONS, issueChallenge, InMemoryNonceStore, createGate } from '../src/index.js';
+// Internal, deliberately not part of the public API (LIBRARY_CONVENTIONS §1):
+// imported from the module directly, the way the package itself uses it.
+import { resolveProvisionedBinary } from '../src/binary.js';
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 

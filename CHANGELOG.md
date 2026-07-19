@@ -13,7 +13,7 @@ bring-your-own-binary (D10) exactly as in `0.4.1`.
 ### Added
 - **`provisionBinary(dir?, opts?)`** — fetches the prebuilt longfellow verifier
   service for this platform (linux-x64 today) and refuses any byte that does not
-  match the sha256 pinned in `src/binary.manifest.json`, the same trust model as
+  match the sha256 pinned in `src/binary.manifest.js`, the same trust model as
   the circuits: the download host (a GitHub release of this repo) is untrusted.
   Idempotent, atomic; default target is the per-user cache
   (`$XDG_CACHE_HOME`/`~/.cache` + `/zk8een`). `opts.platform` provisions for
@@ -21,16 +21,17 @@ bring-your-own-binary (D10) exactly as in `0.4.1`.
 - **`binary:` is now optional** on `Verifier.start` / `startGate`: when omitted,
   the provisioned binary is found in the default dir and — because a binary,
   unlike a circuit, cannot be integrity-checked by the service at load — is
-  **re-hashed against the pin on every start** (`resolveProvisionedBinary`). A
-  binary that rots or is swapped on disk is refused with the fix named, never
-  run. An explicit `binary:` path still wins, and the pin deliberately does not
-  apply to it (bring-your-own stays first-class).
+  **re-hashed against the pin on every start**, and checked for executability. A
+  binary that rots, is swapped, or has lost its execute bit is refused with the
+  fix named, never run. An explicit `binary:` path still wins, and the pin
+  deliberately does not apply to it (bring-your-own stays first-class); an empty
+  or non-string `binary:` is a loud config error, not a silent fallback.
 - **`.github/workflows/binaries.yml`** — the public build: clones upstream at the
   pinned commit, applies the tracked patch series (`poc/patches/`), builds the
   C++ core + cgo Go service on a clean runner, and **refuses to release a binary
-  the full integration suite has not passed on that runner** — with the suite's
-  skip count asserted to be zero, because green-by-skipping is this project's own
-  recurring failure shape. Assets land on the `longfellow-bin-1` release with
+  the full integration suite has not passed on that runner** — asserting its
+  pass/fail counts and matching every skip against the one legitimate reason,
+  because green-by-skipping is this project's own recurring failure shape. Assets land on the `longfellow-bin-1` release with
   checksums; every released byte is auditable back to the workflow run that built
   it. No `postinstall` auto-download — provisioning stays an explicit step.
 
@@ -39,9 +40,29 @@ bring-your-own-binary (D10) exactly as in `0.4.1`.
   (present since `0.1.0`, shipped in `0.4.1`). `types/circuits.d.ts` carried
   `import manifest from './circuits.manifest.json'`, but no JSON is shipped into
   `types/` — so any TS adopter running `tsc` got `TS2307` from inside
-  `node_modules/zk8een`. Both manifests now declare their shape in JSDoc instead
-  of having it inferred, so nothing JSON-shaped leaks into the public `.d.ts`.
-  Found by typechecking a real `npm pack` + install, not by reading the source.
+  `node_modules/zk8een`. **The manifests are now plain ESM modules**
+  (`src/*.manifest.js`) rather than JSON imported through an import attribute,
+  per LIBRARY_CONVENTIONS §1 — so their types are generated from the data itself
+  and nothing unresolvable reaches the public `.d.ts`. Found by typechecking a
+  real `npm pack` + install, not by reading the source.
+- **CI now typechecks the published artifact, not just the source.** `tsc
+  --noEmit` never looks at the generated `.d.ts` the way an adopter resolves it,
+  which is exactly how the above shipped green for four releases. The push/PR
+  workflow now packs the tarball, installs it into a throwaway consumer project,
+  and typechecks the documented usage against it — verified non-vacuous by
+  reintroducing the JSON import and watching the step fail.
+
+### Internal
+- **`src/pinned.js`** — the fetch-and-verify sequence (reachability, advertised
+  size before the body is read, actual size, sha256, atomic write-then-rename)
+  existed twice, once for circuits and once for the binary, drifting
+  independently. It is the package's integrity boundary, so it now lives in one
+  place that can be audited once. Verified behaviour-preserving: every refusal
+  message on both paths is byte-identical to before.
+- **Only `provisionBinary` is public** of the four functions the binary work
+  added (LIBRARY_CONVENTIONS §1 — default OUT on new API surface). `Verifier.start`
+  resolves the binary itself, so the rest stay internal rather than becoming a
+  promise that is breaking to take back.
 
 ### Dev-only
 - CHANGELOG's bottom link-reference table completed (0.2.0–0.4.1 were missing).
@@ -54,7 +75,7 @@ bring-your-own-binary (D10) exactly as in `0.4.1`.
   legitimate reason rather than tolerated by count; the release job refuses to
   overwrite a published asset whose bytes differ from the manifest pin; and the
   upstream commit, patch list, and release tag are read from
-  `src/binary.manifest.json` instead of being second copies that can drift.
+  `src/binary.manifest.js` instead of being second copies that can drift.
 
 ## [0.4.1] — 2026-07-16
 

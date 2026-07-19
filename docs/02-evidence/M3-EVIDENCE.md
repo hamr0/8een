@@ -44,7 +44,8 @@ The EU app's Longfellow circuits ship in `eudi-lib-android-wallet-core`'s AAR
 (`wallet-core/src/main/assets/circuits/longfellow-libzk-v1/`); the EU verifier's ship
 in `av-dc-api-backend`'s vendored `multipaz-longfellow/src/commonMain/circuits/`. Both
 sets were compared against 8een's pinned manifest (`src/circuits.manifest.json`, 17
-circuits) by sha256:
+circuits — the same pins now live in `src/circuits.manifest.js`, renamed in 0.5.0;
+the circuit ids and hashes are unchanged) by sha256:
 
 | Source | circuits | vs 8een's pinned sha256 |
 |---|---|---|

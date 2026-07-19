@@ -48,3 +48,41 @@ jobs:
 
       - name: Test (unit)
         run: npm test
+
+      - name: Types are usable BY AN ADOPTER, not just internally
+        # `tsc --noEmit` above checks the SOURCE. It cannot see the one thing
+        # adopters actually consume: the generated .d.ts, resolved from inside
+        # node_modules. That gap shipped a package whose types failed with
+        # TS2307 for every TypeScript adopter, from 0.1.0 through 0.4.1, while
+        # this workflow stayed green the whole time.
+        #
+        # So: pack the real tarball, install it into a throwaway consumer, and
+        # typecheck the documented usage against it. This is the only step here
+        # that tests the published artifact rather than the repo.
+        run: |
+          mkdir -p /tmp/pkg /tmp/consumer
+          npm pack --pack-destination /tmp/pkg
+          cd /tmp/consumer
+          cat > package.json <<'JSON'
+          { "name": "consumer", "private": true, "type": "module" }
+          JSON
+          cat > tsconfig.json <<'JSON'
+          { "compilerOptions": { "strict": true, "module": "nodenext",
+            "moduleResolution": "nodenext", "target": "es2022",
+            "noEmit": true, "types": ["node"] } }
+          JSON
+          # The README/context.md quickstart, verbatim in spirit: the prebuilt
+          # path with `binary:` omitted, plus the gate.
+          cat > app.ts <<'TS'
+          import { Verifier, startGate, provisionBinary, provision, manifest } from 'zk8een';
+          await provision('./circuits');
+          await provisionBinary();
+          const v = await Verifier.start({ circuitDir: './c', caCerts: './p.pem' });
+          const verdict = await v.check({ transcript: Buffer.from(''), deviceResponse: Buffer.from('') });
+          if (!verdict.ok) throw new Error(verdict.reason);
+          await startGate({ circuitDir: './c', caCerts: './p.pem',
+            challengeSecret: 'x'.repeat(16), store: 'memory' });
+          console.log(manifest.commit);
+          TS
+          npm install --no-audit --no-fund /tmp/pkg/*.tgz typescript @types/node
+          ./node_modules/.bin/tsc
