@@ -352,7 +352,12 @@ export function createGate(opts) {
  * `nonceStore` -- are checked HERE, before the slow circuit load, so a missing one
  * fails in a second. `store:'memory'` is an explicit single-process dev shortcut.
  *
- * @param {import('./types.js').ServiceInit & {threshold?: number,
+ * `binary` may be omitted after `provisionBinary()`, exactly as on
+ * `Verifier.start` -- the pin-verified prebuilt is then resolved and re-hashed
+ * at start. Pass a path to run your own build.
+ *
+ * @param {Omit<import('./types.js').ServiceInit, 'binary'> & {binary?: string,
+ *   threshold?: number,
  *   requireCurrentValidity?: boolean, toleranceMs?: number,
  *   requireSingleUse?: boolean, challengeSecret?: Buffer|Uint8Array|string,
  *   nonceStore?: import('./types.js').NonceStore, store?: 'memory',

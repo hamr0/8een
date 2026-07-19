@@ -66,6 +66,27 @@ Pinned into `src/binary.manifest.json`: that sha256 + 10,124,224 bytes, keyed
    (`D11: with binary omitted, …` in `test/integration.test.js`), skip-gated on
    a provisioned binary being present.
 
+## Post-review corrections (2026-07-19)
+
+A high-effort review's verifier agents all died on a spend limit, so its
+"no findings" verdict proved nothing and its 18 finder candidates were checked
+by hand instead. Six were real and are fixed here; each was **measured**, and
+each fix has a regression test watched failing against the pre-fix code.
+
+| Found | Measured evidence | Fix |
+|---|---|---|
+| **The proof gate did not gate.** Actions' default shell is `bash -e {0}` — no `pipefail` — so `npm run test:integration \| tee` exits with *tee's* status. A failing suite would have been released. | Reproduced under `bash -e`: a suite returning 1 with `# fail 7` gave step exit **0**. | `set -o pipefail` + asserted pass/fail/test counts. Re-probed against 4 scenarios: failing suite, mispathed prereqs, empty run, healthy — only the healthy one releases. |
+| **The zero-skip assertion would fail every future dispatch**, because the new D11 test legitimately skips on a build runner (it needs a binary provisioned from the release). | Reproduced with an empty `XDG_CACHE_HOME`: skip count 1 → job fails. | Skips matched against that one specific reason instead of being tolerated by count, so a genuinely mispathed prerequisite still fails the run. |
+| **`--clobber` could swap a published asset's bytes**, breaking `provisionBinary()` for every zk8een already on npm, which pins the old hash. | Read from the release job as written. | The job now refuses to overwrite a published tag whose pin ≠ built bytes; a real rebuild needs a new `longfellow-bin-N` and a manifest update in the same commit. |
+| **The published `.d.ts` did not typecheck for adopters** — `import './circuits.manifest.json'` leaks into the public types, and no JSON is shipped to `types/`. **Present since 0.1.0; shipped in 0.4.1.** | `npm pack` → install into a consumer project → `tsc`: two `TS2307`s from inside `node_modules/zk8een`. | Both manifests declare their shape in JSDoc. Re-verified on a clean reinstall: **exit 0**. |
+| **`startGate`'s type still required `binary`**, contradicting the README example and CHANGELOG claim written alongside it. | `tsc` on the documented call: `TS2345: Property 'binary' is missing`. | `startGate` JSDoc mirrors `Verifier.start`. Both documented examples now typecheck. |
+| **A restrictive umask left the fetched binary non-executable** (hash-perfect, unspawnable), and an empty-string `binary:` bypassed resolution to reach `spawn('')`. | `umask 0111` → file lands `0644`; `'' ?? x` keeps `''`. | `chmod` after rename, an executability check in resolve, and a loud `TypeError` for empty/non-string `binary`. |
+
+Also changed while in there: the cached binary filename now carries the release
+tag (two zk8een versions pinning different releases would have shared one cache
+file), and the workflow reads commit/patches/release from the manifest rather
+than keeping second copies that can drift from what the package verifies.
+
 ## Deviations / notes
 
 - `workflow_dispatch` cannot trigger a workflow that is not yet on `main`; the

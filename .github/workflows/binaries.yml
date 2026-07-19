@@ -20,16 +20,22 @@ name: binaries
 
 on:
   workflow_dispatch:
+  # TEMPORARY (pre-merge verification): `workflow_dispatch` cannot see a workflow
+  # that is not yet on the default branch, so the hardened gate is proved from
+  # the branch. REMOVE before merge — dispatch-only is the shipped trigger.
+  push:
+    branches: [prebuilt-binaries]
 
 permissions:
   contents: read
 
-env:
-  LONGFELLOW_COMMIT: d8ad8f65187c7c364a3c2181ad484bcab03f0ec2
-
 jobs:
   linux-x64:
     runs-on: ubuntu-22.04
+    outputs:
+      release-tag: ${{ steps.manifest.outputs.release }}
+      pinned-sha256: ${{ steps.manifest.outputs.sha256 }}
+      commit: ${{ steps.manifest.outputs.commit }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -39,12 +45,31 @@ jobs:
         with:
           go-version: '1.24'
 
+      - name: Read the build baseline from src/binary.manifest.json
+        # SINGLE SOURCE OF TRUTH. The manifest is what the shipped package
+        # verifies against, so the build must take its commit, patch list, and
+        # release tag from there rather than keeping a second copy here that can
+        # drift into building something the package will refuse.
+        id: manifest
+        run: |
+          M=src/binary.manifest.json
+          {
+            echo "commit=$(node -p "require('./$M').commit")"
+            echo "release=$(node -p "require('./$M').release")"
+            echo "sha256=$(node -p "require('./$M').binaries['linux-x64'].sha256")"
+          } >> "$GITHUB_OUTPUT"
+          echo "patches<<EOF" >> "$GITHUB_OUTPUT"
+          node -p "require('./$M').patches.join('\n')" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
       - name: Install build dependencies (upstream Dockerfile list)
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake libssl-dev libzstd-dev libgtest-dev libbenchmark-dev zlib1g-dev
 
       - name: Clone longfellow-zk at the pinned commit
+        env:
+          LONGFELLOW_COMMIT: ${{ steps.manifest.outputs.commit }}
         run: |
           git init poc/longfellow-zk
           git -C poc/longfellow-zk remote add origin https://github.com/google/longfellow-zk
@@ -52,11 +77,17 @@ jobs:
           git -C poc/longfellow-zk checkout FETCH_HEAD
 
       - name: Apply the tracked patch series (the build baseline)
+        # Applied BY NAME from the manifest, in manifest order — not a `000*`
+        # glob. A glob would silently pick up an untracked or renamed patch and
+        # build something the manifest does not describe.
+        env:
+          PATCHES: ${{ steps.manifest.outputs.patches }}
         run: |
-          for p in "$PWD"/poc/patches/000*.patch; do
-            echo "applying ${p##*/}"
-            git -C poc/longfellow-zk apply "$p"
-          done
+          while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            echo "applying $p"
+            git -C poc/longfellow-zk apply "$PWD/poc/patches/$p"
+          done <<< "$PATCHES"
 
       - name: Build the C++ core (cmake, clang, Release)
         working-directory: poc/longfellow-zk
@@ -90,16 +121,42 @@ jobs:
         # The suite SKIPS cleanly when its prerequisites are absent — correct
         # on a contributor laptop, but on THIS runner a skip means the build
         # is mispathed and the run proved nothing. Green-by-skipping is the
-        # exact silent-partial failure this project exists to refuse, so
-        # assert zero skips.
+        # exact silent-partial failure this project exists to refuse, so the
+        # counts below are asserted rather than eyeballed.
+        #
+        # `set -o pipefail` is load-bearing, not decoration: Actions' default
+        # shell is `bash -e {0}`, where the exit status of `cmd | tee log` is
+        # TEE's — zero — so without it a FAILING suite sailed through this step
+        # and its binary was uploaded and released. Measured, not theorised.
+        # Belt and braces: the summary counts are asserted too, so the gate
+        # survives someone dropping the pipefail later.
+        #
+        # ONE skip is legitimate here and only one: the D11 prebuilt-path test
+        # needs a binary provisioned from the RELEASE, which a runner building
+        # that very binary does not have (and on a new longfellow-bin-N is not
+        # yet published). Every other skip means a mispathed prerequisite, so
+        # skips are matched against that specific reason rather than tolerated
+        # by count.
         run: |
+          set -o pipefail
           npm run test:integration 2>&1 | tee itest.log
           grep -E '^# (tests|pass|fail|skipped)' itest.log
-          SKIPPED=$(grep -oE '^# skipped [0-9]+' itest.log | grep -oE '[0-9]+')
-          if [ "${SKIPPED:-1}" -ne 0 ]; then
-            echo "::error::integration suite skipped $SKIPPED tests — prerequisites mispathed; this run proves nothing"
+          count() { grep -oE "^# $1 [0-9]+" itest.log | grep -oE '[0-9]+' | tail -1; }
+          TESTS=$(count tests); PASS=$(count pass); FAIL=$(count fail); SKIPPED=$(count skipped)
+          LEGIT=$(grep -c 'no provisioned prebuilt binary' itest.log || true)
+          if [ "${TESTS:-0}" -lt 30 ]; then
+            echo "::error::only ${TESTS:-0} tests ran — the suite did not execute properly; this run proves nothing"
             exit 1
           fi
+          if [ "${FAIL:-1}" -ne 0 ] || [ "${PASS:-0}" -eq 0 ]; then
+            echo "::error::integration suite failed (${FAIL} failed, ${PASS} passed) — this binary is not fit to release"
+            exit 1
+          fi
+          if [ "${SKIPPED:-1}" -gt "${LEGIT:-0}" ]; then
+            echo "::error::integration suite skipped ${SKIPPED} tests but only ${LEGIT} are the expected prebuilt-path skip — prerequisites mispathed; this run proves nothing"
+            exit 1
+          fi
+          echo "✅ ${PASS}/${TESTS} passed, ${SKIPPED} expected skip(s) — binary is fit to release"
 
       - name: Upload binary + checksum as workflow artifact
         uses: actions/upload-artifact@v4
@@ -122,7 +179,9 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      RELEASE_TAG: longfellow-bin-1
+      RELEASE_TAG: ${{ needs.linux-x64.outputs.release-tag }}
+      PINNED_SHA256: ${{ needs.linux-x64.outputs.pinned-sha256 }}
+      LONGFELLOW_COMMIT: ${{ needs.linux-x64.outputs.commit }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -132,6 +191,32 @@ jobs:
         run: |
           mv server longfellow-verifier-linux-x64
           sha256sum longfellow-verifier-linux-x64 | tee SHA256SUMS
+
+      - name: Refuse to replace a published asset with different bytes
+        # `--clobber` overwrites in place, and every zk8een already on npm pins
+        # the OLD asset's sha256. Silently swapping the bytes under a live tag
+        # would break `provisionBinary()` for every published version — a
+        # supply-integrity failure, not a convenience issue.
+        #
+        # So: if the manifest already pins a real hash for this release, the
+        # freshly built binary must match it. A genuinely new build belongs
+        # under a NEW longfellow-bin-N tag, with the manifest pin updated in the
+        # same commit. Bootstrapping a tag whose pin is still a placeholder is
+        # the one case that may proceed.
+        run: |
+          BUILT=$(sha256sum longfellow-verifier-linux-x64 | cut -d' ' -f1)
+          echo "built:  $BUILT"
+          echo "pinned: $PINNED_SHA256"
+          if [ "$BUILT" = "$PINNED_SHA256" ]; then
+            echo "✅ built bytes match the manifest pin"
+          elif ! printf '%s' "$PINNED_SHA256" | grep -qE '^[0-9a-f]{64}$'; then
+            echo "::notice::manifest pin for $RELEASE_TAG is a placeholder — bootstrapping; pin $BUILT into src/binary.manifest.json"
+          elif gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::$RELEASE_TAG is already published and the build differs from its pinned sha256. Overwriting it would break provisionBinary() for every zk8een already on npm. Cut a new longfellow-bin-N tag and update src/binary.manifest.json in the same commit."
+            exit 1
+          else
+            echo "::notice::$RELEASE_TAG not yet published; pin $BUILT into src/binary.manifest.json"
+          fi
 
       - name: Create the release if it does not exist, then attach the assets
         run: |

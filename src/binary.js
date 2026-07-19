@@ -18,10 +18,28 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
+import { access, chmod, mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import manifest from './binary.manifest.json' with { type: 'json' };
+import rawManifest from './binary.manifest.json' with { type: 'json' };
+
+/**
+ * The manifest's shape is declared rather than inferred from the JSON, and that
+ * is deliberate: inferring it makes `tsc` emit `import ... from
+ * './binary.manifest.json'` into the PUBLIC .d.ts, which then fails in every
+ * adopter's typecheck -- the JSON is not shipped into `types/`, and resolving it
+ * would demand `resolveJsonModule` in their tsconfig besides. Measured against a
+ * real `npm pack` + install: two TS2307s from inside node_modules. Keep the
+ * annotation, or the types stop being installable.
+ *
+ * @typedef {{asset: string, sha256: string, bytes: number}} BinaryEntry
+ * @typedef {{upstream: string, commit: string, patches: string[], release: string,
+ *   binaries: Record<string, BinaryEntry>}} BinaryManifest
+ */
+
+/** @type {BinaryManifest} */
+const manifest = rawManifest;
 
 export { manifest as binaryManifest };
 
@@ -77,7 +95,7 @@ export async function provisionBinary(dir = defaultBinaryDir(), opts = {}) {
   const { platform = `${process.platform}-${process.arch}`, onProgress = () => {}, fetchImpl = fetch } = opts;
   const entry = entryFor(platform);
   await mkdir(dir, { recursive: true });
-  const path = join(dir, entry.asset);
+  const path = cachedPath(dir, entry);
 
   if (await isIntact(path, entry.sha256)) {
     // Re-assert the mode: a binary that lost its x-bit is "present" but useless,
@@ -106,14 +124,34 @@ export async function provisionBinary(dir = defaultBinaryDir(), opts = {}) {
 export async function resolveProvisionedBinary(dir = defaultBinaryDir(), opts = {}) {
   const { platform = `${process.platform}-${process.arch}` } = opts;
   const entry = entryFor(platform);
-  const path = join(dir, entry.asset);
+  const path = cachedPath(dir, entry);
   if (!(await isIntact(path, entry.sha256))) {
     throw new Error(
       `no verifier binary at ${path} (or its bytes do not match the pinned sha256). ` +
         `Run provisionBinary() first, or pass your own build as \`binary:\`.`,
     );
   }
+  // Byte-correct but not executable is a real state -- a restrictive umask at
+  // provision time, or a cache restored by a tool that drops modes -- and it
+  // fails later as a bare EACCES from spawn, nowhere near the cause. Say it here.
+  if (!(await isExecutable(path))) {
+    throw new Error(
+      `the verifier binary at ${path} is not executable (its bytes are correct). ` +
+        `Run provisionBinary() to repair its mode, or \`chmod +x\` it.`,
+    );
+  }
   return path;
+}
+
+/**
+ * Where a given release's binary is cached. The RELEASE TAG is part of the
+ * filename on purpose: the asset name alone (`longfellow-verifier-linux-x64`)
+ * is stable across releases, so two zk8een versions pinning different releases
+ * would otherwise share one cache file and re-fetch over each other forever --
+ * each refusing the other's bytes, correctly but uselessly.
+ */
+function cachedPath(dir, entry) {
+  return join(dir, `${entry.asset}-${manifest.release}`);
 }
 
 async function isIntact(path, expected) {
@@ -121,6 +159,15 @@ async function isIntact(path, expected) {
     return sha256(await readFile(path)) === expected;
   } catch {
     return false; // absent, unreadable -- either way, not a binary we will run
+  }
+}
+
+async function isExecutable(path) {
+  try {
+    await access(path, constants.X_OK);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -169,6 +216,11 @@ async function fetchBinary(entry, path, fetchImpl) {
   const partial = `${path}.part-${randomUUID()}`;
   try {
     await writeFile(partial, bytes, { flag: 'wx', mode: 0o755 });
+    // writeFile's `mode` is masked by the process umask -- measured: under
+    // `umask 0111` the file lands 0644 and the binary we just verified is not
+    // executable. chmod is not masked, so assert the mode explicitly rather
+    // than leaving a hash-perfect binary that cannot be spawned.
+    await chmod(partial, 0o755);
     await rename(partial, path);
   } catch (err) {
     await unlink(partial).catch(() => {});

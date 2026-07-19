@@ -34,10 +34,27 @@ bring-your-own-binary (D10) exactly as in `0.4.1`.
   checksums; every released byte is auditable back to the workflow run that built
   it. No `postinstall` auto-download — provisioning stays an explicit step.
 
+### Fixed
+- **The published TypeScript types did not typecheck in an adopter's project**
+  (present since `0.1.0`, shipped in `0.4.1`). `types/circuits.d.ts` carried
+  `import manifest from './circuits.manifest.json'`, but no JSON is shipped into
+  `types/` — so any TS adopter running `tsc` got `TS2307` from inside
+  `node_modules/zk8een`. Both manifests now declare their shape in JSDoc instead
+  of having it inferred, so nothing JSON-shaped leaks into the public `.d.ts`.
+  Found by typechecking a real `npm pack` + install, not by reading the source.
+
 ### Dev-only
 - CHANGELOG's bottom link-reference table completed (0.2.0–0.4.1 were missing).
 - `ci.yml` coverage comment corrected: a clean runner *can* run the integration
   suite now — `binaries.yml` does exactly that on every build.
+- `binaries.yml` hardened after a review found its proof gate did not gate:
+  under Actions' default `bash -e {0}` the suite's exit status was `tee`'s, so a
+  **failing** integration suite would have released its binary. Now `pipefail`
+  plus asserted pass/fail/skip counts, with skips matched against the one
+  legitimate reason rather than tolerated by count; the release job refuses to
+  overwrite a published asset whose bytes differ from the manifest pin; and the
+  upstream commit, patch list, and release tag are read from
+  `src/binary.manifest.json` instead of being second copies that can drift.
 
 ## [0.4.1] — 2026-07-16
 

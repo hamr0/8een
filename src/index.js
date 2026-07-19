@@ -167,6 +167,17 @@ export class Verifier {
     if (!Number.isInteger(threshold) || threshold < 1) {
       throw new TypeError(`threshold must be a positive integer, got ${opts?.threshold}`);
     }
+    // An empty/blank `binary` is a config error, not a choice -- it is what an
+    // unset `process.env.VERIFIER_BIN` looks like once something coerces it to a
+    // string. Falling through to the provisioned binary would quietly run
+    // something the adopter did not ask for; spawning '' would fail far away
+    // with a bare ENOENT. Say it here instead.
+    if (opts?.binary != null && (typeof opts.binary !== 'string' || opts.binary.trim() === '')) {
+      throw new TypeError(
+        `binary must be a non-empty path (got ${JSON.stringify(opts.binary)}); ` +
+          'omit it entirely to use the binary from provisionBinary()',
+      );
+    }
     // No `binary:`? Use the provisioned prebuilt -- which resolveProvisionedBinary
     // re-hashes against the manifest pin right now, at the last moment anyone can.
     // It throws (with the fix in the message) if nothing intact is there; we never

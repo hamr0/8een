@@ -44,7 +44,7 @@ import { readFileSync, existsSync, mkdtempSync, writeFileSync, readdirSync } fro
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Verifier, VerifierService, REASONS, issueChallenge, InMemoryNonceStore, createGate, defaultBinaryDir, binaryManifest } from '../src/index.js';
+import { Verifier, VerifierService, REASONS, issueChallenge, InMemoryNonceStore, createGate, resolveProvisionedBinary } from '../src/index.js';
 import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 
@@ -938,12 +938,23 @@ test('unlinkability: two presentations of one credential are indistinguishable (
  * is omitted, and Verifier.start re-hashes and runs THAT. Needs the provisioned
  * binary on this machine (run provisionBinary() once); skips cleanly otherwise.
  */
-const prebuiltEntry = binaryManifest.binaries[`${process.platform}-${process.arch}`];
-const prebuiltPath = prebuiltEntry ? join(defaultBinaryDir(), prebuiltEntry.asset) : null;
+/*
+ * The gate ASKS THE MODULE rather than rebuilding its path. An earlier cut
+ * constructed `join(defaultBinaryDir(), entry.asset)` here; when the cache
+ * filename gained its release tag, that copy silently stopped matching and this
+ * test skipped while the suite still reported green -- the exact failure this
+ * file exists to catch, committed inside it, again. resolveProvisionedBinary IS
+ * the contract under test (right bytes, executable), so there is nothing left to
+ * duplicate.
+ */
+const prebuiltResolved = await resolveProvisionedBinary().then(
+  (p) => p,
+  () => null,
+);
 const prebuiltSuite = {
   skip: proofSuite.skip
     ? proofSuite.skip
-    : prebuiltPath && existsSync(prebuiltPath)
+    : prebuiltResolved
       ? false
       : 'no provisioned prebuilt binary in defaultBinaryDir (run provisionBinary() once)',
 };
@@ -971,7 +982,7 @@ test('D11: with binary omitted, the pin-verified prebuilt verifies and refuses l
       { ok: tampered.ok, over: tampered.over_threshold, reason: tampered.reason },
       { ok: true, over: false, reason: 'zk_proof_invalid' },
     );
-    t.diagnostic(`prebuilt at ${prebuiltPath} (release ${binaryManifest.release})`);
+    t.diagnostic(`prebuilt resolved at ${prebuiltResolved}`);
   } finally {
     await v.stop();
   }

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, readdirSync, readFileSync, statSync, writeFileSync, chmodSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -111,7 +112,7 @@ test('resolveProvisionedBinary refuses an empty or mismatched dir, naming the fi
 
   // A file with the right name and wrong bytes is exactly as unacceptable as no
   // file: unlike a circuit, nothing downstream can re-check a binary.
-  writeFileSync(join(dir, pinnedEntry.asset), 'not the verifier');
+  writeFileSync(join(dir, `${pinnedEntry.asset}-${manifest.release}`), 'not the verifier');
   await assert.rejects(resolveProvisionedBinary(dir, PINNED), /Run provisionBinary\(\)/);
 });
 
@@ -130,9 +131,14 @@ test('defaultBinaryDir honors XDG_CACHE_HOME at call time', () => {
 // this machine has provisioned for real (the integration environment does); the
 // tests then exercise the accept path with real, uncrafted data -- and skip
 // cleanly, stating why, everywhere else.
-const realPath = entry ? join(defaultBinaryDir(), entry.asset) : null;
+const realPath = entry ? join(defaultBinaryDir(), `${entry.asset}-${manifest.release}`) : null;
+// Gate on the PIN, not the size: a byte-rotted file of the right length is
+// exactly what this module exists to refuse, so it must not be what unlocks
+// the accept-path tests.
 const haveReal =
-  realPath != null && existsSync(realPath) && statSync(realPath).size === entry.bytes;
+  realPath != null &&
+  existsSync(realPath) &&
+  createHash('sha256').update(readFileSync(realPath)).digest('hex') === entry.sha256;
 const needsReal = {
   skip: haveReal ? false : 'no provisioned binary in defaultBinaryDir (run provisionBinary() once)',
 };
@@ -148,7 +154,10 @@ test('provisions the pinned binary executable, then does not re-fetch it', needs
 
   const cold = await provisionBinary(dir, { fetchImpl: counting });
   assert.equal(cold.action, 'fetched');
-  assert.equal(cold.path, join(dir, entry.asset));
+  // The release tag is part of the cached filename: two zk8een versions pinning
+  // different releases must not share one cache file and clobber each other.
+  assert.equal(cold.path, join(dir, `${entry.asset}-${manifest.release}`));
+  assert.match(cold.path, new RegExp(`${manifest.release}$`));
   assert.equal(requests, 1);
   assert.ok(statSync(cold.path).mode & 0o100, 'must be executable');
 
@@ -159,14 +168,69 @@ test('provisions the pinned binary executable, then does not re-fetch it', needs
   assert.equal(await resolveProvisionedBinary(dir), cold.path);
 });
 
+// REGRESSION. writeFile's `mode` is masked by the process umask, so under a
+// umask that clears execute bits the freshly-fetched binary landed 0644:
+// hash-perfect and unspawnable, failing later as a bare EACCES nowhere near the
+// cause. Measured before the chmod was added.
+test('a restrictive umask cannot leave the fetched binary non-executable', needsReal, async () => {
+  const dir = tmp('bin-umask');
+  const prev = process.umask(0o111);
+  try {
+    const r = await provisionBinary(dir, { fetchImpl: serving(realBytes()) });
+    assert.ok(statSync(r.path).mode & 0o100, 'the binary must be executable despite the umask');
+  } finally {
+    process.umask(prev);
+  }
+});
+
+// REGRESSION. Bytes and mode are separate failures: a cache restored by a tool
+// that drops modes leaves the pin satisfied and the binary unrunnable. Resolve
+// must say so itself rather than let spawn fail far away.
+test('resolve refuses a byte-correct binary that is not executable, naming the fix', needsReal, async () => {
+  const dir = tmp('bin-noexec');
+  const r = await provisionBinary(dir, { fetchImpl: serving(realBytes()) });
+  chmodSync(r.path, 0o644);
+
+  await assert.rejects(resolveProvisionedBinary(dir), (err) => {
+    assert.match(err.message, /not executable/);
+    assert.match(err.message, /provisionBinary\(\)|chmod/, 'must name the fix');
+    return true;
+  });
+
+  // And provisioning repairs it without re-downloading.
+  const repaired = await provisionBinary(dir, { fetchImpl: serving(realBytes()) });
+  assert.equal(repaired.action, 'present');
+  assert.equal(await resolveProvisionedBinary(dir), repaired.path);
+});
+
 test('a binary that rots on disk is refused by resolve and replaced by provision', needsReal, async () => {
   const dir = tmp('bin-rot');
   await provisionBinary(dir, { fetchImpl: serving(realBytes()) });
 
-  writeFileSync(join(dir, entry.asset), 'corrupted');
+  writeFileSync(join(dir, `${entry.asset}-${manifest.release}`), 'corrupted');
   await assert.rejects(resolveProvisionedBinary(dir), /Run provisionBinary\(\)/);
 
   const repaired = await provisionBinary(dir, { fetchImpl: serving(realBytes()) });
   assert.equal(repaired.action, 'fetched', 'the damaged binary is re-fetched');
   assert.equal(await resolveProvisionedBinary(dir), repaired.path);
+});
+
+// REGRESSION. `opts.binary ?? resolve()` treats only null/undefined as omitted,
+// so `binary: process.env.VERIFIER_BIN` with the var set-but-empty slipped an
+// empty string through to spawn. Neither silently substituting the provisioned
+// binary nor spawning '' is acceptable: it is a config error and must say so.
+test('an empty or non-string binary is a loud config error, not a silent fallback', async () => {
+  const { Verifier } = await import('../src/index.js');
+  for (const bad of ['', '   ', 42, {}]) {
+    await assert.rejects(
+      Verifier.start({ binary: bad, circuitDir: './c', caCerts: './p.pem' }),
+      (err) => {
+        assert.ok(err instanceof TypeError, `${JSON.stringify(bad)} must be a TypeError`);
+        assert.match(err.message, /binary must be a non-empty path/);
+        assert.match(err.message, /omit it entirely/, 'must name the intended alternative');
+        return true;
+      },
+      `binary: ${JSON.stringify(bad)} must be refused`,
+    );
+  }
 });

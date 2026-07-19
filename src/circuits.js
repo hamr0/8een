@@ -26,7 +26,22 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import manifest from './circuits.manifest.json' with { type: 'json' };
+import rawManifest from './circuits.manifest.json' with { type: 'json' };
+
+/**
+ * Shape declared, not inferred -- see the same note in `binary.js`. Inferring it
+ * leaks `import './circuits.manifest.json'` into the public .d.ts, and that JSON
+ * is not shipped into `types/`, so an adopter's `tsc` fails inside node_modules.
+ * This has been true of the published package since 0.1.0 and was found by
+ * typechecking a real `npm pack` install, not by reading the source.
+ *
+ * @typedef {{id: string, sha256: string, bytes: number}} CircuitEntry
+ * @typedef {{upstream: string, commit: string, path: string,
+ *   circuits: CircuitEntry[]}} CircuitManifest
+ */
+
+/** @type {CircuitManifest} */
+const manifest = rawManifest;
 
 export { manifest };
 

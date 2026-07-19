@@ -105,9 +105,14 @@ build runner. Idempotent; `action` is `'present'` or `'fetched'`.
 
 Only **linux-x64** is pinned today. Any other platform throws, naming the
 build-it-yourself path (`binary:`). Provision into the default dir and
-`Verifier.start` finds the binary with no `binary:` option; provision elsewhere
-(`opts.platform` provisions for another target, e.g. into a container image) and
-you pass the returned `path` yourself.
+`Verifier.start` / `startGate` find the binary with no `binary:` option;
+provision elsewhere (`opts.platform` provisions for another target, e.g. into a
+container image) and you pass the returned `path` yourself.
+
+The cached filename carries the release tag
+(`longfellow-verifier-linux-x64-longfellow-bin-1`), so two zk8een versions
+pinning different releases coexist in one cache instead of overwriting each
+other. Treat the path as ours: read it from the return value, do not construct it.
 
 - `opts.platform` — default `${process.platform}-${process.arch}`
 - `opts.onProgress` — `({asset, action}) => void`
@@ -116,10 +121,10 @@ you pass the returned `path` yourself.
 ### `resolveProvisionedBinary(dir?, opts?) → Promise<string>`
 
 The path `Verifier.start` uses when `binary:` is omitted — **re-hashed against the
-pin on every call**. A binary that rots or is swapped on disk is refused with an
-error naming the fix, never run: unlike a circuit, a binary cannot be
-integrity-checked by the service at load time, so this is the last moment anyone
-can check it.
+pin on every call**, and checked for executability. A binary that rots, is
+swapped, or has lost its execute bit is refused with an error naming the fix,
+never run: unlike a circuit, a binary cannot be integrity-checked by the service
+at load time, so this is the last moment anyone can check it.
 
 ### `Verifier.start(opts) → Promise<Verifier>`
 
@@ -216,7 +221,7 @@ different transport. Never throws, whatever you hand it.
 
 | Option | Default | What it does |
 |---|---|---|
-| `binary` | *provisioned* | Path to the longfellow verifier service binary. Omit it after `provisionBinary()` — the provisioned binary is found in the default dir and re-hashed against the pin at every start. Pass a path to run your own build (the pin then deliberately does not apply). |
+| `binary` | *provisioned* | Path to the longfellow verifier service binary. Omit it after `provisionBinary()` — the provisioned binary is found in the default dir and re-hashed against the pin at every start. Pass a path to run your own build (the pin then deliberately does not apply). An empty or non-string value is a **config error and throws**, rather than silently falling back — it is what an unset `process.env.VERIFIER_BIN` looks like. |
 | `circuitDir` | *required* | Directory of circuit files. Use `provision()`. |
 | `caCerts` | *required* | **PEM bundle of trusted issuer roots. THE TRUST BOUNDARY.** |
 | `threshold` | `18` | The age in "over N". The output stays one bit. |
