@@ -211,10 +211,40 @@ The closed set of `reason` values. Branch on these, never on `detail`.
 | `false` | `replay_detected` | Single-use required and this nonce was already spent — a replay. We cannot confirm freshness. **Not** a "no". |
 | `false` | `session_unknown` | Single-use required, but the proof is not bound to a live challenge we issued (unrecognized/forged/expired nonce). **Not** a "no". |
 
+### `GATE_REASONS`
+
+The closed set of `reason` values the **HTTP gate** returns for transport-level
+refusals — the ones that never reach the verifier at all. Verdict reasons above
+come back in the same `reason` field, so branch on both from one place.
+
+| HTTP | `reason` | Means |
+|---|---|---|
+| 400 | `bad_request` | Body is not the `{transcript, deviceResponse}` shape. |
+| 404 | `not_found` | No such gate route. |
+| 404 | `challenge_disabled` | `GET /8een/challenge` while running with `requireSingleUse: false`. |
+| 405 | `method_not_allowed` | Right route, wrong verb. |
+| 408 | `request_timeout` | The body arrived too slowly. |
+| 413 | `payload_too_large` | The body exceeded the size bound. |
+| 429 | `rate_limited` | Too many in-flight requests. |
+| 500 | `internal_error` | The gate itself failed. Never leaks detail to the client. |
+
 ### `classify(raw, opts?) → Verdict`
 
 The pure verdict function, exported for testing and for anyone wrapping a
 different transport. Never throws, whatever you hand it.
+
+### `circuitsManifest`
+
+The frozen pin the circuit downloads are checked against — upstream `commit`,
+`path`, and a `sha256` + `bytes` per circuit. Read it if you want to vendor or
+audit the artefacts; you never need it for normal use.
+
+> **Not exported, on purpose.** `VerifierService` (the raw subprocess driver —
+> `Verifier` wraps it), `inspectChallenge` and `applySingleUse` (the internals
+> `check()` calls) were exported before 0.5.0 without ever being documented, and
+> were removed in 0.5.0. `manifest` became `circuitsManifest` in the same pass, so
+> the name says whose. Hand-rolling replay defence out of the challenge internals
+> is the failure `requireSingleUse` fails closed to prevent — use the gate.
 
 ## All options
 
@@ -372,6 +402,18 @@ Other properties:
   ([`poc/M0-EVIDENCE.md`, step 1](https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md))
   and pass its path as `binary:` — `npm install zk8een` alone still verifies
   nothing there.
+- **glibc, not musl.** The prebuilt binary is glibc-linked, and Alpine reports
+  itself as `linux-x64` exactly as Debian does — so it would match the manifest,
+  download 10 MB, and only then fail to spawn. 8een detects musl and refuses at
+  `provisionBinary()` / `Verifier.start()` with a message naming the cause. Use a
+  glibc image (`node:22-bookworm-slim`) or build against musl and pass `binary:`.
+- **`os`/`cpu` are intentionally unrestricted.** Bring-your-own-binary is
+  first-class on every platform, so `package.json` does not block the install; the
+  platform gap surfaces as a named runtime error instead of an install failure.
+- **Pinned, not mirrored.** Circuits come from `google/longfellow-zk` at a pinned
+  commit, the binary from this repo's releases. Substituted bytes are refused by
+  sha256; an unreachable origin has no fallback host. Vendor the artefacts into
+  your own image if you need that guarantee.
 - **No EU trust-list ingestion — but the anchors now exist.** 8een consumes a PEM
   bundle and an ISO 18013-5 VICAL (the US/AAMVA format); it does **not** parse the
   ETSI-signed XML that eIDAS trust lists use. What has changed is the source: the EU

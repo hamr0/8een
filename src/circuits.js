@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Puts the circuit files on disk, and refuses to accept bytes that are not the
  * ones we pinned.

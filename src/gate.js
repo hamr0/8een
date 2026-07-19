@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * The HTTP gate -- M4 piece 3, the "adopt without thinking" layer.
  *

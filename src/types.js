@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Shared shapes, as JSDoc typedefs. This file emits its own `.d.ts`, so adopters
  * see these types in their editor; nothing here has a runtime body.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Puts the longfellow verifier binary on disk, and refuses bytes that are not
  * the ones we pinned (PRD §9 D11).
@@ -42,6 +43,45 @@ export function defaultBinaryDir() {
   return join(cache, 'zk8een');
 }
 
+// Where an adopter goes when there is no prebuilt binary for them. A bare
+// `poc/M0-EVIDENCE.md` is useless from inside `node_modules` -- `poc/` is not in
+// the package `files`, so the path they are told to read does not exist on their
+// disk. Always hand them the URL.
+const BUILD_IT_YOURSELF =
+  'https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md (step 1)';
+
+/**
+ * Is this a musl libc system (Alpine and friends)?
+ *
+ * The trap this closes: `process.platform`-`process.arch` reads `linux-x64` on
+ * Alpine exactly as it does on Debian, so the manifest MATCHES, we download 10 MB,
+ * and the glibc-linked binary then fails to spawn with an ENOENT-shaped error that
+ * names nothing useful and surfaces far from here (`service.js`). That is this
+ * project's recurring bug shape -- a check trusting a surface signal that does not
+ * mean what it appears to -- so it gets diagnosed at the boundary instead.
+ *
+ * Detection is stdlib-only: glibc builds report a runtime glibc version in the
+ * diagnostic report header; musl builds have no such field. **Fails open** -- if we
+ * cannot tell, we proceed and let the spawn error stand, because wrongly refusing
+ * to run on a working glibc box is the worse mistake.
+ *
+ * @returns {boolean}
+ */
+function isMuslLinux() {
+  if (process.platform !== 'linux') return false;
+  try {
+    const raw = process.report?.getReport?.();
+    /** @type {{glibcVersionRuntime?: string} | undefined} */
+    const header =
+      typeof raw === 'string'
+        ? JSON.parse(raw).header
+        : /** @type {{header?: {glibcVersionRuntime?: string}}} */ (raw)?.header;
+    return header ? !header.glibcVersionRuntime : false;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * @param {string} platform e.g. `linux-x64`
  * @returns {{asset: string, sha256: string, bytes: number}}
@@ -52,8 +92,16 @@ function entryFor(platform) {
     const have = Object.keys(manifest.binaries).join(', ');
     throw new Error(
       `no prebuilt verifier binary for ${platform} (available: ${have}). ` +
-        `Build it yourself from the documented steps (poc/M0-EVIDENCE.md step 1) ` +
+        `Build it yourself from the documented steps -- ${BUILD_IT_YOURSELF} -- ` +
         `and pass its path as \`binary:\`.`,
+    );
+  }
+  if (isMuslLinux()) {
+    throw new Error(
+      `the prebuilt ${platform} verifier binary is glibc-linked and this looks like ` +
+        `a musl system (Alpine): it would download and then fail to spawn. Either use ` +
+        `a glibc image (e.g. node:22-bookworm-slim) or build the binary against musl ` +
+        `yourself -- ${BUILD_IT_YOURSELF} -- and pass its path as \`binary:\`.`,
     );
   }
   return entry;

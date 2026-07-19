@@ -14,14 +14,12 @@
   <img src="https://img.shields.io/badge/license-Apache%202.0-2a4f8c" alt="license: Apache 2.0">
   <img src="https://img.shields.io/badge/status-M5%20passed%20·%20v0.5.0-2a8c4f" alt="status: M5 passed, v0.5.0">
   <a href="https://github.com/hamr0/8een/actions/workflows/ci.yml"><img src="https://github.com/hamr0/8een/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <!-- No npm version badge: the only thing on the registry is an inert 0.0.0
-       placeholder holding the name. A version badge would advertise it as a
-       release. It lands when a version ships that can actually verify a proof. -->
+  <a href="https://www.npmjs.com/package/zk8een"><img src="https://img.shields.io/npm/v/zk8een?color=2a4f8c" alt="npm: zk8een"></a>
 </p>
 
 **Stateless, one-bit, unlinkable age verification. Proof in → `true/false` out — no name, no birthdate, no document, no identifier, nothing stored.**
 
-Small enough to understand completely, boring enough to run forever. 8een checks a zero-knowledge age proof against an issuer trust list and answers exactly one bit. Proofs are fresh per presentation and mathematically unlinkable — two sites comparing notes see two strangers. There is nothing to breach, subpoena, or sell, because identity never arrives. The cryptography is never ours: proofs are generated and verified by [google/longfellow-zk](https://github.com/google/longfellow-zk) (Apache-2.0, IETF [draft-google-cfrg-libzk](https://datatracker.ietf.org/doc/draft-google-cfrg-libzk/)) — the same scheme the EU age-verification blueprint designates and the EU app already carries in every build. 8een is the missing half: the verifier, the trust-anchor handling, the tests, the drop-in gate, and the documentation that make it adoptable.
+Small enough to understand completely, boring enough to run forever. 8een checks a zero-knowledge age proof against an issuer trust list and answers exactly one bit. Proofs are fresh per presentation and unlinkable — two sites comparing notes see two strangers. That unlinkability is the *scheme's* property, cited from its security analysis rather than claimed by us; the narrower thing we tested ourselves, and the measured limits of that test, are written down in [PRD §7.3](docs/01-product/8een-prd.md). There is nothing to breach, subpoena, or sell, because identity never arrives. The cryptography is never ours: proofs are generated and verified by [google/longfellow-zk](https://github.com/google/longfellow-zk) (Apache-2.0, IETF [draft-google-cfrg-libzk](https://datatracker.ietf.org/doc/draft-google-cfrg-libzk/)) — the same scheme the EU age-verification blueprint designates and the EU app already carries in every build. 8een is the missing half: the verifier, the trust-anchor handling, the tests, the drop-in gate, and the documentation that make it adoptable.
 
 ## Why
 
@@ -41,7 +39,13 @@ Every claim above is pinned to a file, a line, and a commit in [`docs/02-evidenc
 
 ## Quick start
 
-On **linux-x64**, `npm install zk8een` is now the whole install (PRD §9 D11): `provisionBinary()` fetches a prebuilt longfellow verifier — built from the pinned upstream commit + 8een's tracked patches by a [public workflow](.github/workflows/binaries.yml) that refuses to release a binary the full integration suite hasn't passed — and verifies every byte against a sha256 pinned inside the package. Zero runtime dependencies, vanilla Node ≥22. On other platforms it stays bring-your-own-binary (PRD §9 D10): build it once from the documented steps ([`poc/M0-EVIDENCE.md`, step 1](https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md)) and point `binary:` at the result.
+On **linux-x64 (glibc)**, `npm install zk8een` is now the whole install (PRD §9 D11): `provisionBinary()` fetches a prebuilt longfellow verifier — built from the pinned upstream commit + 8een's tracked patches by a [public workflow](.github/workflows/binaries.yml) that refuses to release a binary the full integration suite hasn't passed — and verifies every byte against a sha256 pinned inside the package. Zero runtime dependencies, vanilla Node ≥22. On other platforms it stays bring-your-own-binary (PRD §9 D10): build it once from the documented steps ([`poc/M0-EVIDENCE.md`, step 1](https://github.com/hamr0/8een/blob/main/poc/M0-EVIDENCE.md)) and point `binary:` at the result.
+
+Three things worth knowing before you adopt, none of them hidden:
+
+- **`os`/`cpu` are deliberately not restricted in `package.json`.** Bring-your-own-binary is a supported, first-class configuration on *every* platform (PRD §9 D11), so declaring `"os": ["linux"]` would block installs that work fine. The cost of that choice is that `npm install` succeeds everywhere and the platform gap surfaces at `provisionBinary()` / `Verifier.start()` instead — as a named error telling you what to do, never as a confusing failure. **Alpine/musl is detected explicitly** rather than being allowed to download a glibc binary that cannot spawn.
+- **Downloads are integrity-pinned but not mirrored.** The circuits come from `google/longfellow-zk` at a pinned commit; the binary from this repo's releases. Every byte is checked against a sha256 inside the package, so a *substituted* file is refused — but if either origin goes away, `provision()` has no fallback host. Vendor the artefacts into your own image if that matters to you.
+- **No proof from a real phone has ever reached this verifier.** Interop with the EU stack was proven against the EU's own JVM prover, byte-for-byte; the exact `ZkSystemId` label the shipping wallet app emits on-device is still unpinned, because closing it needs hardware and a live endpoint this project has neither of. If that label turns out not to end in a bare circuit hash, the result is `circuit_unavailable` — *"I cannot verify"* — never a wrong answer. See [M3 evidence §3.6](docs/02-evidence/M3-EVIDENCE.md).
 
 ```js
 import { Verifier, provision, provisionBinary } from 'zk8een';

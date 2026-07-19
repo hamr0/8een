@@ -74,7 +74,7 @@ jobs:
           # The README/context.md quickstart, verbatim in spirit: the prebuilt
           # path with `binary:` omitted, plus the gate.
           cat > app.ts <<'TS'
-          import { Verifier, startGate, provisionBinary, provision, manifest } from 'zk8een';
+          import { Verifier, startGate, provisionBinary, provision, circuitsManifest } from 'zk8een';
           await provision('./circuits');
           await provisionBinary();
           const v = await Verifier.start({ circuitDir: './c', caCerts: './p.pem' });
@@ -82,7 +82,7 @@ jobs:
           if (!verdict.ok) throw new Error(verdict.reason);
           await startGate({ circuitDir: './c', caCerts: './p.pem',
             challengeSecret: 'x'.repeat(16), store: 'memory' });
-          console.log(manifest.commit);
+          console.log(circuitsManifest.commit);
           TS
           npm install --no-audit --no-fund /tmp/pkg/*.tgz typescript @types/node
           ./node_modules/.bin/tsc

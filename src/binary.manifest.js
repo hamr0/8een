@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Pinned prebuilt verifier binaries (PRD §9 D11).
  *

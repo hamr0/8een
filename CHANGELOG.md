@@ -10,6 +10,27 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 `npm install zk8een` is now the whole install. Everywhere else the package stays
 bring-your-own-binary (D10) exactly as in `0.4.1`.
 
+### Removed — BREAKING
+The public surface was trimmed to what is documented, before 1.0 makes it
+permanent (LIBRARY_CONVENTIONS §1 — default OUT; an export is a promise that is
+cheap to make and breaking to take back). Each of these was exported without ever
+appearing in `README.md` or `8een.context.md`:
+
+- **`VerifierService`** — the raw subprocess driver. `Verifier` wraps it and is
+  what adopters were always meant to hold.
+- **`inspectChallenge`, `applySingleUse`** — the internals `Verifier.check()`
+  calls. Exposing them invited hand-rolled replay defence, which is precisely the
+  failure `requireSingleUse` fails closed to prevent (§9 D8). Use the gate.
+- **`manifest` → renamed `circuitsManifest`** — an export named `manifest` does
+  not say whose; it now matches the `binaryManifest` it sits beside.
+
+This is a **hard** removal: `exports` declares only `"."`, so there is no subpath
+escape hatch (`import 'zk8een/src/service.js'` throws `ERR_PACKAGE_PATH_NOT_EXPORTED`
+— verified, not assumed). The only released version carrying these is `0.4.1`, which
+is being deprecated in the same release. If one of them was load-bearing for you,
+open an issue and say what for — that is the evidence needed to export it back
+deliberately, with a documented contract, instead of by accident.
+
 ### Added
 - **`provisionBinary(dir?, opts?)`** — fetches the prebuilt longfellow verifier
   service for this platform (linux-x64 today) and refuses any byte that does not
@@ -51,6 +72,23 @@ bring-your-own-binary (D10) exactly as in `0.4.1`.
   workflow now packs the tarball, installs it into a throwaway consumer project,
   and typechecks the documented usage against it — verified non-vacuous by
   reintroducing the JSON import and watching the step fail.
+- **The publish workflow now runs that same adopter check.** It was only in
+  `ci.yml`, which covers pushes to `main` — but `publish.yml` is
+  `workflow_dispatch` and can run from any ref, so the one path that actually puts
+  bytes on the registry was the one path missing the gate that catches the bug this
+  package already shipped. It also builds `types/` explicitly first: `types/` is
+  generated and gitignored, and `npm pack` does not run `prepublishOnly`.
+- **Alpine/musl is detected instead of failing obscurely.** `process.platform`-
+  `process.arch` reads `linux-x64` on Alpine exactly as on Debian, so the manifest
+  matched, 10 MB downloaded, and the glibc-linked binary then failed to spawn with
+  an error that named nothing and surfaced in `service.js`, far from the cause.
+  It is now diagnosed at the boundary with the fix named. Detection is stdlib-only
+  (no `glibcVersionRuntime` in the diagnostic report header) and **fails open** —
+  wrongly refusing to run on a working glibc box is the worse mistake. Watched
+  firing in a real `node:22-alpine` container, and watched staying silent on glibc.
+- **The "build it yourself" error pointed at a file that is not in the tarball.**
+  It cited `poc/M0-EVIDENCE.md`; `poc/` is not in `files`, so a macOS adopter
+  greps `node_modules` for it and finds nothing. It now gives the URL.
 
 ### Internal
 - **`src/pinned.js`** — the fetch-and-verify sequence (reachability, advertised
@@ -64,8 +102,42 @@ bring-your-own-binary (D10) exactly as in `0.4.1`.
   resolves the binary itself, so the rest stay internal rather than becoming a
   promise that is breaking to take back.
 
+### Docs
+- **The README stated something false about this package's own registry entry** —
+  that npm held "an inert 0.0.0 placeholder", withholding a version badge until a
+  version shipped that could verify a proof. `0.4.1` shipped on 2026-07-17 and does
+  verify proofs. For a project that keeps a public retraction ledger, shipping a
+  wrong claim about itself inside the tarball is the worst kind. Fixed, and the
+  badge it was withholding is now there.
+- **PRD §10 still carried the pre-D11 paragraph** ("prebuilt platform binaries
+  remain open work") and cross-referenced a `README §Status` section that has never
+  existed. Superseded in place; the dangling reference is dropped.
+- **PRD §7.2 (30-minute adoption cost) amended — it was never run.** The criterion
+  says "timed with a real run before M4 closes, **not asserted**"; M4 closed on an
+  adjacent result (the README's Express snippet against real Express 5.2.1) filed
+  under its heading, which made it look discharged. Now recorded as not met, with
+  the reason it cannot be run in-house — everyone here has already read the README,
+  so any number would measure recall, not adoption cost — and deferred to the first
+  external adopter.
+- **"Mathematically unlinkable" is now attributed.** PRD §7.3 splits *tested by us*
+  (a byte probe with a measured ≈11-byte detection floor) from *cited, not claimed*
+  (the scheme's own security analysis). The README's headline asserted it flat, in a
+  paragraph where every other claim carries a citation.
+- **Three adoption facts moved out of the footnotes and into Quick start**: `os`/`cpu`
+  are deliberately unrestricted (BYO is first-class everywhere, so blocking installs
+  would be wrong); downloads are integrity-pinned but not mirrored, so a dead origin
+  has no fallback; and no proof from a real phone has ever reached this verifier —
+  the on-phone `ZkSystemId` stays unpinned, and if it does not end in a bare circuit
+  hash the result is `circuit_unavailable`, never a wrong answer.
+- **`GATE_REASONS` and `circuitsManifest` documented** in `8een.context.md` — they
+  were exported and explained nowhere.
+- **SPDX identifiers** (`Apache-2.0`) on all eleven `src/*.js`; there were none, and
+  this is a security component people vendor file-by-file.
+
 ### Dev-only
 - CHANGELOG's bottom link-reference table completed (0.2.0–0.4.1 were missing).
+- `publish.yml`'s header still said "copy to `.github/workflows/publish.yml`" — a
+  leftover from the template it was lifted from; it *is* that file.
 - `ci.yml` coverage comment corrected: a clean runner *can* run the integration
   suite now — `binaries.yml` does exactly that on every build.
 - `binaries.yml` hardened after a review found its proof gate did not gate:

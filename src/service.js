@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Supervises the longfellow reference verifier (Go) as a long-lived child and
  * turns one verification into one raw outcome for verdict.classify().

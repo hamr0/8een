@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * 8een -- the verifier half.
  *
@@ -22,25 +23,29 @@
 
 import { VerifierService } from './service.js';
 import { classify, REASONS } from './verdict.js';
-import { provision, manifest } from './circuits.js';
+import { provision, manifest as circuitsManifest } from './circuits.js';
 // Only `provisionBinary` is public (LIBRARY_CONVENTIONS §1 -- default OUT on new
 // API surface; the burden of proof is on adding). `resolveProvisionedBinary`,
 // `defaultBinaryDir` and `binaryManifest` stay internal: `Verifier.start` already
 // resolves the binary for you, and an export is a promise that is cheap to make
 // now and breaking to take back.
 import { provisionBinary, resolveProvisionedBinary } from './binary.js';
-import { issueChallenge, inspectChallenge, applySingleUse, InMemoryNonceStore } from './challenge.js';
+import { issueChallenge, applySingleUse, InMemoryNonceStore } from './challenge.js';
 
+// The same rule, applied to the surface that predates it (0.5.0). `VerifierService`
+// (the raw subprocess driver -- `Verifier` wraps it), `inspectChallenge` and
+// `applySingleUse` (the plumbing `check()` calls internally; hand-rolling replay
+// defence with them is the failure D8 fails closed to prevent) were exported without
+// ever being documented, and came back OUT. `manifest` -- an export named `manifest`
+// tells the reader nothing about whose -- is now `circuitsManifest`, matching the
+// `binaryManifest` it sits beside. Tests import all of these from their own modules.
 export {
   REASONS,
   classify,
-  VerifierService,
   provision,
-  manifest,
+  circuitsManifest,
   provisionBinary,
   issueChallenge,
-  inspectChallenge,
-  applySingleUse,
   InMemoryNonceStore,
 };
 

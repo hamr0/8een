@@ -196,9 +196,28 @@ Every line above is an executable test by M2 — the negatives especially,
 since "rejects others" is the half that usually goes untested.
 
 ### 7.2 Secondary — adoption cost
-A developer integrates the gate into an existing vanilla-Node/Express site in
+~~A developer integrates the gate into an existing vanilla-Node/Express site in
 **under 30 minutes using only the README**. Timed with a real run before M4
-closes, not asserted.
+closes, not asserted.~~
+
+**AMENDED 2026-07-19 — not met as written; recording what was actually done.**
+M4 closed without this criterion being executed. What `docs/02-evidence/M4-EVIDENCE.md`
+records under this heading is a *different, narrower* check: the README's Express
+snippet was run against real Express 5.2.1 — `app.use(gate.express())` serves the two
+gate routes, the site's own routes still fall through cleanly via `next()`, and a
+replay is refused. That is a real result (copy-paste completeness), but it is not a
+timed integration, and filing it under this heading made the criterion look
+discharged when it was not.
+
+**Why it stays open rather than being run now:** the criterion requires a developer
+who has *not* read the README before. Everyone who could run it here wrote it, so any
+number produced in-house would measure recall, not adoption cost. It is therefore
+**deferred to the first external adopter**, whose timing we will record verbatim
+(including if it is bad).
+
+*The rule this cost us: a criterion that says "not asserted" cannot be discharged by
+an adjacent result filed under its heading. It is the §7.3 lesson — "a guard you have
+not watched fire is not a guard" — applied to an acceptance criterion.*
 
 ### 7.1a Credential expiry — CLOSED by M4 piece 1 (2026-07-15)
 The §7.1 rows were all executable and passing as of M2 **except that none exercised an
@@ -360,11 +379,16 @@ nonce, or a session we did not issue are the exceptions in the other direction:
   deprecated placeholder that exists only because npm requires a package to exist
   before a trusted publisher can be attached to it. ~~**Nothing real is published
   until the longfellow binary problem is solved**~~ **Amended by D10 (2026-07-17):
-  published as bring-your-own-binary.** The package states plainly (README §Status,
+  published as bring-your-own-binary.** ~~The package states plainly (README §Status,
   `8een.context.md` §Constraints) that `npm install` alone verifies nothing and the
   adopter builds the longfellow binary from the documented steps; prebuilt platform
-  binaries remain open work. The original concern stands otherwise: a correct
-  publish pipeline is not clearance to call it turnkey.
+  binaries remain open work.~~ **Superseded by D11 (2026-07-18):** on linux-x64
+  (glibc) `npm install zk8een` + `provisionBinary()` is the whole install, against a
+  sha256 pinned in the package. Every other platform is still bring-your-own-binary,
+  and `8een.context.md` §Constraints says so — as does the README, which has no
+  `§Status` section; that cross-reference was always dangling and is now dropped.
+  The original concern stands otherwise: a correct publish pipeline is not clearance
+  to call it turnkey, and "turnkey" means linux-x64 and nothing else yet.
 - **License:** Apache-2.0 (matches longfellow-zk).
 - **Repo:** public on GitHub under `hamr0` from day one. **No key material
   ever enters the tree** — AGENT_RULES' "never write keys into the tree" has

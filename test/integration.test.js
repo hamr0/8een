@@ -44,7 +44,10 @@ import { readFileSync, existsSync, mkdtempSync, writeFileSync, readdirSync } fro
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Verifier, VerifierService, REASONS, issueChallenge, InMemoryNonceStore, createGate } from '../src/index.js';
+import { Verifier, REASONS, issueChallenge, InMemoryNonceStore, createGate } from '../src/index.js';
+// Not part of the public surface -- the raw subprocess driver, imported from its own
+// module the way any internal is. `Verifier` is what adopters get.
+import { VerifierService } from '../src/service.js';
 // Internal, deliberately not part of the public API (LIBRARY_CONVENTIONS §1):
 // imported from the module directly, the way the package itself uses it.
 import { resolveProvisionedBinary } from '../src/binary.js';

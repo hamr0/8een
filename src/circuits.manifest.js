@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * The 17 pinned circuit files, keyed by circuit id.
  *
