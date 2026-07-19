@@ -38,6 +38,7 @@ which is this project's signature failure shape.
 | `ldd` | `libcrypto.so.3`, `libzstd.so.1`, `libstdc++.so.6`, `libgcc_s.so.1`, `libc.so.6`, `libm.so.6` — ubiquitous system libraries only (matches upstream's own runtime-image list: `libssl3 libzstd1 zlib1g`) |
 | sha256, spike run | `756869602c84c116e9d94aa07b138a22373acd6f59b2b331e5bf7c0272175b00` |
 | sha256, publish run (released asset) | `7568696…2175b00` — **byte-identical to the spike's.** Two independent clean-runner builds reproduced the same binary. Not a property we designed for or rely on (the manifest pins the released asset, whatever its bytes), but worth recording. |
+| sha256, post-review end-to-end run ([29680733323](https://github.com/hamr0/8een/actions/runs/29680733323)) | `7568696…2175b00` again — a **third** independent build, now from the manifest-driven recipe. |
 
 Pinned into `src/binary.manifest.json`: that sha256 + 10,124,224 bytes, keyed
 `linux-x64`, release `longfellow-bin-1`.
@@ -86,6 +87,41 @@ Also changed while in there: the cached binary filename now carries the release
 tag (two zk8een versions pinning different releases would have shared one cache
 file), and the workflow reads commit/patches/release from the manifest rather
 than keeping second copies that can drift from what the package verifies.
+
+### The hardened workflow, proved end to end
+
+Run [29680733323](https://github.com/hamr0/8een/actions/runs/29680733323), both
+jobs green — and read from the log rather than trusted from the checkmark:
+
+- Patches applied **by name from the manifest**, in order (`0001`, `0002`,
+  `0003`) — not a `000*` glob.
+- The gate reported `✅ 38/39 passed, 1 expected skip(s) — binary is fit to
+  release`: `fail 0` asserted, and the single skip matched against the one
+  legitimate reason (the D11 prebuilt-path test, which cannot run on a runner
+  that is building the binary it would download).
+- The release job's new pin check fired and printed both hashes:
+  `built: 7568696…` = `pinned: 7568696…` → `✅ built bytes match the manifest
+  pin`, so the `--clobber` upload replaced the asset with identical bytes. The
+  published `SHA256SUMS` is unchanged and still equals the package's pin —
+  verified after the run.
+
+### Examined and deliberately left alone
+
+- **"The oversized-body guard trusts the host's `content-length`."** True, and
+  it is the same pre-check `circuits.js` has always had. It is an *availability*
+  guard, not an integrity one — a chunked or lying response is still caught by
+  the exact-length and sha256 checks that follow, which are what decide whether
+  bytes are ever written. Tightening it (a streaming cap) would mean diverging
+  from the proven circuits path for no integrity gain.
+- **"`binary.js` duplicates `circuits.js` almost line for line."** Also true.
+  Extracting a shared fetch-and-verify helper is tempting and was rejected *for
+  this PR*: it would refactor working, proven, security-critical code whose
+  integration coverage exists for the current shape, to serve tidiness. Worth
+  doing deliberately later, with the negative matrix run against both callers.
+- **"The binary is hashed twice at boot."** Measured rather than waved away:
+  **73.3 ms per pass**, so **146.6 ms** for the documented provision-then-start
+  path — **0.33%** of the 44–73 s circuit load it sits beside. Not worth a
+  cache, and the second hash is the one that makes the pin hold at start time.
 
 ## Deviations / notes
 

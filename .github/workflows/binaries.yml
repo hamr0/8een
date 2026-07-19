@@ -20,11 +20,6 @@ name: binaries
 
 on:
   workflow_dispatch:
-  # TEMPORARY (pre-merge verification): `workflow_dispatch` cannot see a workflow
-  # that is not yet on the default branch, so the hardened gate is proved from
-  # the branch. REMOVE before merge — dispatch-only is the shipped trigger.
-  push:
-    branches: [prebuilt-binaries]
 
 permissions:
   contents: read
