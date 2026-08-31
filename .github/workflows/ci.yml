@@ -84,5 +84,5 @@ jobs:
             challengeSecret: 'x'.repeat(16), store: 'memory' });
           console.log(circuitsManifest.commit);
           TS
-          npm install --no-audit --no-fund /tmp/pkg/*.tgz typescript @types/node
+          npm install --no-audit --no-fund --ignore-scripts /tmp/pkg/*.tgz typescript@5 @types/node
           ./node_modules/.bin/tsc
